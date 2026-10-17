@@ -6,5 +6,6 @@ PY=${PYTHON:-python3}
 $PY index.py
 $PY classify.py
 $PY classify_types.py --everyone
+$PY ledger.py
 $PY jury.py
 $PY autoclean.py

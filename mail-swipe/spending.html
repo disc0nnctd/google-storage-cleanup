@@ -1,0 +1,48 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Spending</title><link rel="icon" href="data:,">
+<style>
+body{margin:0;background:#0f1115;color:#eef1f6;font:14px/1.4 system-ui,sans-serif;padding:12px}
+h1{font-size:18px;margin:0 0 4px}.mut{color:#9aa3b2;font-size:12.5px}
+.row{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0}
+select,input,button{background:#262a33;color:#eef1f6;border:0;border-radius:8px;padding:7px 9px;font-size:13px}
+.card{background:#1a1d24;border-radius:12px;padding:12px;margin-top:10px}
+table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:5px 4px;border-top:1px solid #262a33;text-align:left}
+td.n,th.n{text-align:right;white-space:nowrap}
+.bar{height:8px;background:#22a06b;border-radius:4px}
+a{color:#7fb3ff}
+</style></head><body>
+<h1>💰 Spending (from your email)</h1>
+<div class="mut">Built locally from bank alerts and shop receipts. Kept even after the emails are deleted. <a href="/">← Mail Swipe</a></div>
+<div class="row">
+  <select id="src"><option value="bank">Bank &amp; card alerts (no double counting)</option><option value="merchant">Shop receipts</option><option value="all">Both</option></select>
+  <select id="yr"></select>
+  <input id="max" type="number" placeholder="Hide single amounts above ₹" style="width:190px">
+  <input id="q" placeholder="Search merchant / text" style="flex:1;min-width:140px">
+  <button id="csv">⬇ CSV</button>
+</div>
+<div class="card"><b>By month</b><table id="months"></table></div>
+<div class="card"><b>Top merchants / payees</b><table id="merch"></table></div>
+<div class="card"><b>By card / account</b><table id="inst"></table></div>
+<div class="card"><b>Transactions</b> <span class="mut" id="cnt"></span><table id="tx"></table></div>
+<script>
+const $=id=>document.getElementById(id),inr=v=>'₹'+Math.round(v).toLocaleString('en-IN'),esc=t=>String(t??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let L=[];
+fetch('/ledger').then(r=>r.json()).then(d=>{L=d;const ys=[...new Set(L.map(x=>new Date(x.date*1000).getFullYear()))].sort().reverse();
+  $('yr').innerHTML='<option value="">All years</option>'+ys.map(y=>`<option>${y}</option>`).join('');$('yr').value=ys[0]||'';draw()});
+['src','yr','max','q'].forEach(i=>$(i).oninput=draw);
+function rows(){const src=$('src').value,yr=$('yr').value,mx=+$('max').value||0,q=$('q').value.toLowerCase();
+  return L.filter(x=>x.direction==='debit'&&(src==='all'||x.source===src)&&(!yr||new Date(x.date*1000).getFullYear()==yr)&&(!mx||x.amount<=mx)
+    &&(!q||(x.merchant+' '+x.subject+' '+x.sender).toLowerCase().includes(q)))}
+function group(r,key){const g={};r.forEach(x=>{const k=key(x)||'(unknown)';g[k]=g[k]||{n:0,s:0};g[k].n++;g[k].s+=x.amount});return Object.entries(g)}
+function table(id,entries,sortByKey){const max=Math.max(1,...entries.map(e=>e[1].s));
+  entries.sort(sortByKey?(a,b)=>a[0]<b[0]?1:-1:(a,b)=>b[1].s-a[1].s);
+  $(id).innerHTML=entries.slice(0,40).map(([k,v])=>`<tr><td>${esc(k)}</td><td class="n">${v.n}</td><td class="n">${inr(v.s)}</td><td style="width:30%"><div class="bar" style="width:${v.s/max*100}%"></div></td></tr>`).join('')}
+function draw(){const r=rows();
+  table('months',group(r,x=>new Date(x.date*1000).toISOString().slice(0,7)),true);
+  table('merch',group(r,x=>(x.merchant||'').toUpperCase().replace(/^(RAZ\*|IND\*|UPI_)/,'').trim()));
+  table('inst',group(r,x=>x.instrument?'…'+x.instrument:''));
+  $('cnt').textContent=`${r.length} debits · ${inr(r.reduce((a,x)=>a+x.amount,0))}`;
+  $('tx').innerHTML=r.slice(0,300).map(x=>`<tr><td>${new Date(x.date*1000).toLocaleDateString('en-IN')}</td><td>${esc(x.merchant||x.subject.slice(0,40))}</td><td class="n">${inr(x.amount)}</td><td class="mut">${x.instrument?'…'+x.instrument:''}</td></tr>`).join('')}
+$('csv').onclick=()=>{const r=rows(),h='date,amount,merchant,card_or_account,source,sender\n'+r.map(x=>[new Date(x.date*1000).toISOString().slice(0,10),x.amount,'"'+(x.merchant||'').replace(/"/g,"'")+'"',x.instrument,x.source,x.sender].join(',')).join('\n');
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([h],{type:'text/csv'}));a.download='spending.csv';a.click()};
+</script></body></html>

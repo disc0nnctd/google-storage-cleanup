@@ -160,15 +160,21 @@ def _act(sender,kind,batch=None,cat='all',only=None):
             T=types();rows=[(r,mtype(r,T)) for r in rows];rows=[(r,t) for r,t in rows if t in DELETABLE]
             rows=[r for r,t in rows if kind!='trash_old' or past_keep(r,t)]
         elif only is None and kind=='trash_old':rows=[r for r in rows if r['date']<time.time()-YEAR]
+        # spending ledger first: alerts/receipts not yet captured are held back (picked up after the next ledger run)
+        if con.execute("select count(*) from sqlite_master where name='ledger'").fetchone()[0]:
+            T=types();led={x[0] for x in con.execute('select id from ledger where sender=?',(sender,))}
+            held=[r for r in rows if mtype(r,T) in('txn_alert','record') and r['id'] not in led]
+            if held:rows=[r for r in rows if r not in held]
+        else:held=[]
         ids=[r['id'] for r in rows]
-        if not ids:return dict(ok=True,n=0,size=0,id=None)
+        if not ids:return dict(ok=True,n=0,size=0,id=None,held=len(held))
         ok,bad=batch_call(ids,'trash')
         con.executemany("update msg set state='trashed' where id=?",[(i,) for i in ok])
         size=sum(r['size'] for r in rows if r['id'] in set(ok))
         aid=con.execute('insert into action(at,sender,kind,ids,batch,notekey) values(?,?,?,?,?,?)',(int(time.time()),sender,kind,json.dumps(ok),batch,nk)).lastrowid
         con.execute('insert or replace into sender_note values(?,?,?)',(nk,'trashed' if kind=='trash_all' else 'trimmed',int(time.time())))
         con.commit()
-        return dict(ok=not bad,n=len(ok),failed=len(bad),size=size,id=aid)
+        return dict(ok=not bad,n=len(ok),failed=len(bad),size=size,id=aid,held=len(held))
 
 def undo(action_id):
     try:return _undo(action_id)
@@ -313,6 +319,8 @@ def auto_plan(detail=False,jury_gate=True):
     plan={};now=time.time();mine=me()
     jury={(r[0],r[1]):json.loads(r[2]) for r in con.execute('select sender,tmpl,votes from pattern_votes')} if con.execute("select count(*) from sqlite_master where name='pattern_votes'").fetchone()[0] else {}
     use_jury=bool(jury) and jury_gate
+    has_ledger=con.execute("select count(*) from sqlite_master where name='ledger'").fetchone()[0]
+    ledgered={r[0] for r in con.execute('select id from ledger')} if has_ledger else set()
     for r in con.execute("select id,sender,subject,date,size,labels,has_att from msg where state='live'"):
         labs=r['labels'].split(',');a=ai.get(r['sender']);t=mtype(r,T)
         def K(why):keep[why]+=1;ksz[why]+=r['size']
@@ -324,6 +332,7 @@ def auto_plan(detail=False,jury_gate=True):
         TL={'txn_alert':'old status alerts','otp_security':'old OTP / login alerts','marketing':'promotions','notice':'old notices'}
         cat=a['category']
         if t=='record':K('order / receipt / statement');continue
+        if t=='txn_alert' and r['id'] not in ledgered:K('transaction not in spending ledger yet');continue
         if cat in PROTECT_CATS:   # people, tax, health, insurance, jobs, education: only plain promotions may go
             if t=='marketing':why=f'{cat}: promotions'
             else:K(cat.lower());continue
@@ -460,6 +469,10 @@ class H(BaseHTTPRequestHandler):
         if u.path=='/stats':return s.send(200,stats())
         if u.path=='/auto/plan':return s.send(200,dict(auto_plan(),daily=setting('auto_daily',False),last=setting('auto_last'),audit=setting('auto_audit')))
         if u.path=='/auto/sample':return s.send(200,auto_sample(int(q.get('n',['40'])[0]),q.get('side',['trash'])[0],q.get('jury',['1'])[0]!='0'))
+        if u.path=='/spending':return s.send(200,open(os.path.join(HERE,'spending.html'),'rb').read(),'text/html; charset=utf-8')
+        if u.path=='/ledger':
+            rows=[dict(r) for r in db().execute("select id,date,amount,direction,merchant,instrument,source,sender,subject from ledger where parsed=1 order by date desc")]
+            return s.send(200,rows)
         if u.path=='/auto/overrides':
             c=db();out=[]
             for r in c.execute("select sender,tmpl,at from mail_type where model='user' and (sender,tmpl) not in (select sender,tmpl from pattern_override)").fetchall():
