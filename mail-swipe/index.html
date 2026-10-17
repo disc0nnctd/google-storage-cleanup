@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>Mail Swipe</title>
+<link rel="icon" href="data:,">
+<style>
+:root{--keep:#22a06b;--old:#d4882a;--trash:#d64545;--bg:#0f1115;--card:#1a1d24;--mut:#9aa3b2;--chip:#262a33}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:#eef1f6;font:15px/1.35 system-ui,-apple-system,sans-serif;overflow:hidden;overscroll-behavior:none}
+body{display:flex;flex-direction:column;height:100dvh;padding-bottom:env(safe-area-inset-bottom)}
+header{padding:10px 12px 4px}
+.row{display:flex;align-items:center;gap:6px}
+h1{font-size:15px;margin:0;flex:1;white-space:nowrap;overflow:hidden}
+select{min-width:0;flex:1;max-width:none}
+select,.icon{background:var(--chip);color:#eef1f6;border:0;border-radius:8px;padding:6px 8px;font-size:13px}
+.sum{font-size:12.5px;color:var(--mut);margin-top:7px;display:flex;gap:12px;flex-wrap:wrap}
+.sum b{color:#eef1f6}
+#idx{margin:6px 0 0;font-size:12px;color:#e6c27a;background:#2a2416;border-radius:8px;padding:5px 9px;display:none}
+#tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:8px}
+#tabs button{background:var(--chip);border:0;color:#c9d0db;border-radius:9px;padding:7px 2px;font-size:12.5px;border-bottom:3px solid transparent}
+#tabs button.on{color:#fff;background:#323846;border-bottom-color:#7fb3ff}
+#tabs button b{display:block;font-size:14px}
+#stage{flex:1;position:relative;min-height:0;margin:8px 10px 0;touch-action:none}
+#card{position:absolute;inset:0;border-radius:14px;background:var(--card);overflow:auto;padding:14px;will-change:transform;touch-action:pan-y}
+.who{font-size:19px;font-weight:700;word-break:break-word}
+.addr{color:var(--mut);font-size:13px;word-break:break-all;margin-top:2px}
+.warn{margin-top:10px;background:#3a1c1c;border:1px solid #7a2e2e;color:#ffb4b4;border-radius:9px;padding:8px 10px;font-size:13px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
+.st{background:#22262f;border-radius:10px;padding:8px 10px}
+.st b{display:block;font-size:17px}
+.st span{font-size:11.5px;color:var(--mut)}
+.chips{margin-top:10px;display:flex;gap:6px;flex-wrap:wrap}
+.chip{background:var(--chip);border-radius:20px;padding:3px 9px;font-size:12px;color:#c9d0db}
+.subj{margin:12px 0 0;padding:0;list-style:none;font-size:13px}
+.subj li{padding:6px 0;border-top:1px solid #262a33;color:#d4d9e2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.subj h4{margin:0 0 2px;font-size:12px;color:var(--mut);font-weight:500}
+.links{display:flex;gap:8px;margin-top:12px}
+.links a{flex:1;text-align:center;background:var(--chip);color:#7fb3ff;text-decoration:none;border-radius:9px;padding:9px;font-size:13px}
+.stamp{position:absolute;top:16px;padding:5px 12px;border:4px solid;border-radius:10px;font-weight:800;font-size:20px;opacity:0;text-transform:uppercase;background:rgba(0,0,0,.45);pointer-events:none;z-index:2}
+#s-keep{left:14px;color:var(--keep);border-color:var(--keep);transform:rotate(-12deg)}
+#s-trash{right:14px;color:var(--trash);border-color:var(--trash);transform:rotate(12deg)}
+#s-old{left:50%;top:auto;bottom:20px;transform:translateX(-50%);color:var(--old);border-color:var(--old);white-space:nowrap}
+#bar{display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px;padding:8px 10px 4px}
+.act{border:0;border-radius:12px;padding:9px 3px 7px;color:#fff;font-size:14px;font-weight:700;display:flex;flex-direction:column;align-items:center;gap:1px}
+.act small{font-weight:400;font-size:11px;opacity:.9}
+.act .k{font-size:10px;opacity:.6;font-weight:400}
+.act:disabled{opacity:.35}
+#bt{background:var(--trash)}#bo{background:var(--old)}#bk{background:var(--keep)}
+#skiprow{display:flex;justify-content:center;padding:0 10px 8px}
+#skip{background:none;border:0;color:var(--mut);font-size:13px;padding:6px 14px}
+#list{position:absolute;inset:0;overflow:auto;display:none;touch-action:pan-y}
+.li{display:flex;align-items:center;gap:10px;background:var(--card);border-radius:10px;padding:10px;margin-bottom:6px}
+.li div{flex:1;min-width:0}
+.li b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:14px}
+.li span{font-size:12px;color:var(--mut)}
+.li button{background:var(--chip);border:0;color:#7fb3ff;border-radius:8px;padding:8px 10px;font-size:13px;white-space:nowrap}
+#toast{position:fixed;left:50%;bottom:calc(150px + env(safe-area-inset-bottom));pointer-events:none;text-align:center;transform:translateX(-50%);max-width:94vw;background:#2b303b;padding:9px 14px;border-radius:10px;font-size:13.5px;display:none;gap:12px;align-items:center;box-shadow:0 4px 18px #0008;z-index:20}
+#toast button{background:none;border:0;color:#7fb3ff;font-weight:700;font-size:13.5px}
+#busy{position:fixed;inset:0;background:#000a;z-index:15;display:none;align-items:center;justify-content:center;font-size:15px}
+#busy div{background:#22262f;padding:16px 20px;border-radius:12px}
+.modal{position:fixed;inset:0;background:#08090ccc;z-index:18;display:none;align-items:center;justify-content:center;padding:20px}
+.modal .box{background:#1d2028;border-radius:14px;padding:18px;max-width:420px}
+.modal h3{margin:0 0 8px}
+.modal p{color:#c9d0db;font-size:14px}
+.modal .btns{display:flex;gap:8px;margin-top:14px}
+.modal .btns button{flex:1;border:0;border-radius:10px;padding:12px;font-size:15px;font-weight:700}
+#help{position:fixed;inset:0;background:#08090c;z-index:30;display:none;overflow:auto;padding:22px 18px 0}
+#help h2{margin:0 0 4px;font-size:20px}
+#help>p{color:var(--mut);margin:4px 0 14px}
+.opt{display:flex;gap:12px;align-items:flex-start;background:var(--card);border-radius:12px;padding:12px;margin-bottom:10px;border-left:5px solid}
+.opt .g{font-size:24px;width:32px;text-align:center}
+.opt h3{margin:0 0 3px;font-size:16px}
+.opt div p{margin:0;color:#c9d0db;font-size:13.5px}
+.keys{color:var(--mut);font-size:13px;margin:12px 0 18px;line-height:1.85}
+.keys b{color:#eef1f6}
+#undobtn{background:#3a4152;font-weight:600;white-space:nowrap}#undobtn:disabled{opacity:.35}
+kbd{background:#333946;border-radius:4px;padding:1px 6px;font-size:12px;color:#eef1f6}
+#gotit{position:sticky;bottom:0;width:100%;padding:14px;border:0;border-radius:12px;background:#eef1f6;color:#111;font-size:16px;font-weight:700;margin-bottom:14px;box-shadow:0 -12px 20px #08090c}
+#empty{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;text-align:center;color:var(--mut);padding:20px}
+#empty h2{color:#eef1f6}
+</style></head>
+<body>
+<header>
+  <div class="row">
+    <h1>📧 Mail Swipe</h1>
+    <button class="icon" id="undobtn" disabled>↩ Undo</button>
+    <button class="icon" id="helpbtn" aria-label="Help">?</button>
+  </div>
+  <div class="row" style="margin-top:7px">
+    <select id="cat" title="Gmail tab">
+      <option value="promotions">Promotions</option><option value="social">Social</option>
+      <option value="updates">Updates</option><option value="forums">Forums</option>
+      <option value="primary">Primary</option><option value="all">All mail</option>
+    </select>
+    <select id="sort" title="Order"><option value="size">Biggest</option><option value="n">Most emails</option><option value="old">Oldest</option></select>
+  </div>
+  <div class="sum" id="sum"></div>
+  <div id="idx"></div>
+  <div id="tabs"></div>
+</header>
+
+<div id="stage">
+  <div id="card"></div>
+  <div class="stamp" id="s-keep">✅ Keep</div>
+  <div class="stamp" id="s-trash">🗑 Trash all</div>
+  <div class="stamp" id="s-old">🕰 Trash old</div>
+  <div id="list"></div>
+  <div id="empty"></div>
+</div>
+
+<div id="bar">
+  <button class="act" id="bt">🗑 Trash all<small id="bt-s"></small><span class="k">swipe ← · key ←</span></button>
+  <button class="act" id="bo">🕰 Trash old<small id="bo-s"></small><span class="k">swipe ↓ · key ↓</span></button>
+  <button class="act" id="bk">✅ Keep<small>never ask again</small><span class="k">swipe → · key →</span></button>
+</div>
+<div id="skiprow"><button id="skip">Skip for now (S) ›</button></div>
+
+<div id="toast"><span id="tmsg"></span><button id="undo" hidden></button></div>
+<div id="busy"><div id="busymsg">Working…</div></div>
+<div class="modal" id="confirm"><div class="box">
+  <h3>⚠ This looks important</h3>
+  <p id="cmsg"></p>
+  <div class="btns"><button id="cno" style="background:#333946;color:#fff">Cancel</button><button id="cyes" style="background:var(--trash);color:#fff">Trash anyway</button></div>
+</div></div>
+
+<div id="help">
+  <h2>How Mail Swipe works</h2>
+  <p>Each card is <b>one sender</b> with all their emails grouped together, biggest space users first. One swipe deals with every email from that sender in the chosen Gmail tab.</p>
+  <div class="opt" style="border-color:var(--trash)"><span class="g">🗑</span><div>
+    <h3>Swipe left ← Trash all</h3>
+    <p>Moves every email from this sender to Gmail's Trash. Use for shops, newsletters, apps and spam you'll never read.</p></div></div>
+  <div class="opt" style="border-color:var(--old)"><span class="g">🕰</span><div>
+    <h3>Swipe down ↓ Trash old</h3>
+    <p>Trashes emails <b>older than 1 year</b> and keeps the recent ones. Good for services you still use (Swiggy, Amazon, Uber) whose old mail is just clutter.</p></div></div>
+  <div class="opt" style="border-color:var(--keep)"><span class="g">✅</span><div>
+    <h3>Swipe right → Keep</h3>
+    <p>Leaves everything as is and won't show this sender again. Use for people, banks, tax and anything you might need.</p></div></div>
+  <div class="keys">
+    <b>Safe by design:</b><br>
+    • Trash is Gmail's own Trash: recoverable for <b>30 days</b>, then Gmail empties it.<br>
+    • <b>↩ Undo</b> (top) reverses your last action, again and again, even after closing the page. The <b>Trashed</b> tab can restore any sender later.<br>
+    • <b>Starred</b> emails and emails <b>you sent</b> are never touched.<br>
+    • Senders that look like <b>bank / tax / insurance / ID / medical</b> get a red warning and ask before trashing.<br><br>
+    <b>Skip</b> hides a sender for now (it's listed in the Kept &amp; skipped tab).<br>
+    <b>Unsubscribe</b> on the card opens the sender's own unsubscribe page, so new mail stops too.<br>
+    <b>Keyboard:</b> <kbd>←</kbd> trash all · <kbd>↓</kbd> trash old · <kbd>→</kbd> keep · <kbd>S</kbd> skip · <kbd>Z</kbd> undo · <kbd>?</kbd> help<br>
+    <b>Gmail tab menu</b> (top): start with Promotions, then Social and Updates.
+  </div>
+  <button id="gotit">Got it, start</button>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const enc=encodeURIComponent,esc=t=>String(t??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const mb=b=>!b?'0 MB':b>=1e9?(b/1e9).toFixed(2)+' GB':b>=1e6?(b/1e6).toFixed(1)+' MB':Math.max(1,Math.round(b/1e3))+' KB';
+const day=t=>new Date(t*1000).toLocaleDateString('en-IN',{month:'short',year:'numeric'});
+const ago=t=>{const d=(Date.now()/1000-t)/86400;return d<1?'today':d<45?Math.round(d)+' days ago':d<700?Math.round(d/30)+' months ago':(d/365).toFixed(1)+' years ago'};
+let all=[],queue=[],tab='review',busy=false,stats={},hdata={trashed:[],kept:[]};
+const card=$('card'),stage=$('stage');
+
+async function load(){
+  const [s,st,h]=await Promise.all([fetch('/senders?cat='+$('cat').value).then(r=>r.json()),fetch('/stats').then(r=>r.json()),fetch('/history').then(r=>r.json())]);
+  all=s;stats=st;hdata=h;build();render();
+}
+function build(){
+  queue=all.filter(s=>!s.note&&s.trashable>0);
+  const k=$('sort').value;
+  queue.sort(k==='n'?(a,b)=>b.n-a.n:k==='old'?(a,b)=>a.last-b.last:(a,b)=>b.size-a.size);
+}
+$('cat').onchange=()=>{localStorage.cat=$('cat').value;load()};
+$('sort').onchange=()=>{localStorage.sort=$('sort').value;build();render()};
+
+function header(){
+  const L={trash_all:'🗑 Trash all',trash_old:'🕰 Trash old',keep:'✅ Keep',skip:'⏭ Skip'};
+  $('undobtn').disabled=!stats.actions;$('undobtn').title=stats.last?`Undo: ${L[stats.last.kind]} ${stats.last.sender} · key Z`:'Nothing to undo';
+  $('sum').innerHTML=`<span>🗑 Trashed <b>${stats.trashed}</b> emails · <b>${mb(stats.trashed_size)}</b> freed</span><span>📬 ${stats.live} left · ${mb(stats.live_size)}</span>`;
+  $('idx').style.display=stats.indexing?'block':'none';
+  $('idx').textContent=`⏳ Still reading your mailbox: ${(stats.live+stats.trashed).toLocaleString()} of ~${stats.total.toLocaleString()} emails so far. Counts grow as it goes; reload the page later for more.`;
+  const tabs=[['review','📥 To review',queue.length],['kept','✅ Kept & skipped',hdata.kept.length],['trashed','🗑 Trashed',hdata.trashed.length]];
+  $('tabs').innerHTML=tabs.map(([k,t,n])=>`<button data-t="${k}" class="${tab===k?'on':''}"><b>${n}</b>${t}</button>`).join('');
+  $('tabs').querySelectorAll('button').forEach(b=>b.onclick=()=>{tab=b.dataset.t;render()});
+}
+function render(){
+  header();
+  const review=tab==='review';
+  ['bar','skiprow'].forEach(i=>$(i).style.display=review?'':'none');
+  $('list').style.display=review?'none':'block';
+  if(!review){card.style.display='none';$('empty').style.display='none';return renderList()}
+  const s=queue[0];
+  card.style.transition='none';card.style.transform='';stamps(0,0);
+  if(!s){card.style.display='none';$('empty').style.display='flex';
+    $('empty').innerHTML=`<h2>Nothing left here 🎉</h2><p>Every sender in <b>${$('cat').selectedOptions[0].text}</b> is dealt with.</p><p>Try another Gmail tab from the top menu.</p>`;
+    ['bt','bo','bk'].forEach(i=>$(i).disabled=true);return}
+  $('empty').style.display='none';card.style.display='block';card.scrollTop=0;
+  const cats=Object.entries(s.cats).map(([k,v])=>`<span class="chip">${k} ${v}</span>`).join('');
+  card.innerHTML=`
+    <div class="who">${esc(s.name||s.sender.split('@')[0])}</div>
+    <div class="addr">${esc(s.sender)}</div>
+    ${s.protect?`<div class="warn">⚠ Looks like <b>money / tax / ID</b> mail (matched “${esc(s.protect)}”). Usually worth keeping, or only trashing old.</div>`:''}
+    <div class="grid">
+      <div class="st"><b>${s.n.toLocaleString()}</b><span>emails</span></div>
+      <div class="st"><b>${mb(s.size)}</b><span>space used</span></div>
+      <div class="st"><b>${ago(s.last)}</b><span>latest email</span></div>
+      <div class="st"><b>${day(s.first)}</b><span>oldest email</span></div>
+      <div class="st"><b>${Math.round(s.unread/s.n*100)}%</b><span>never opened</span></div>
+      <div class="st"><b>${s.old.toLocaleString()}</b><span>older than 1 year</span></div>
+    </div>
+    <div class="chips">${cats}${s.starred?`<span class="chip">⭐ ${s.starred} starred (kept)</span>`:''}</div>
+    <ul class="subj"><h4>Latest subjects</h4>${s.subjects.map(t=>`<li>${esc(t)||'<i>(no subject)</i>'}</li>`).join('')}</ul>
+    <div class="links">
+      ${s.unsub&&s.unsub.startsWith('http')?`<a href="${esc(s.unsub)}" target="_blank" rel="noopener noreferrer">✋ Unsubscribe</a>`:''}
+      <a href="https://mail.google.com/mail/u/0/#search/${enc('from:'+s.sender)}" target="_blank" rel="noopener">📨 Open in Gmail</a>
+    </div>`;
+  $('bt-s').textContent=`${s.trashable.toLocaleString()} · ${mb(s.size)}`;
+  $('bo-s').textContent=s.old?`${s.old.toLocaleString()} · ${mb(s.old_size)}`:'none that old';
+  $('bt').disabled=false;$('bk').disabled=false;$('bo').disabled=!s.old;
+}
+function renderList(){
+  const L=$('list');
+  if(tab==='trashed'){
+    L.innerHTML=hdata.trashed.length?`<p style="color:var(--mut);font-size:12.5px;margin:2px 2px 8px">Restore puts those emails back exactly where they were. Gmail empties Trash after 30 days.</p>`+hdata.trashed.map(a=>`
+      <div class="li"><div><b>${esc(a.name||a.sender)}</b><span>${a.kind==='trash_old'?'🕰 old only':'🗑 all'} · ${a.n} emails · ${mb(a.size)} · ${ago(a.at)}</span></div>
+      <button data-id="${a.id}">↺ Restore</button></div>`).join(''):'<p style="color:var(--mut);text-align:center;margin-top:40px">Nothing trashed yet.</p>';
+    L.querySelectorAll('button').forEach(b=>b.onclick=()=>restore(+b.dataset.id));
+  }else{
+    L.innerHTML=hdata.kept.length?hdata.kept.map(k=>`
+      <div class="li"><div><b>${esc(k.sender)}</b><span>${k.decision==='keep'?'✅ kept':k.decision==='trimmed'?'🕰 kept recent':'⏭ skipped'} · ${ago(k.at)}</span></div>
+      <button data-s="${esc(k.sender)}">↩ Review again</button></div>`).join(''):'<p style="color:var(--mut);text-align:center;margin-top:40px">No kept or skipped senders yet.</p>';
+    L.querySelectorAll('button').forEach(b=>b.onclick=async()=>{await post('/act',{sender:b.dataset.s,kind:'unnote'});toast('Back in To review: '+b.dataset.s,false);await load()});
+  }
+}
+function post(u,d){return fetch(u,{method:'POST',body:JSON.stringify(d)}).then(r=>r.json())}
+function stamps(dx,dy){const c=v=>Math.max(0,Math.min(1,v/110)),h=Math.abs(dx)>dy;
+  $('s-keep').style.opacity=h?c(dx):0;$('s-trash').style.opacity=h?c(-dx):0;$('s-old').style.opacity=h?0:c(dy)}
+function ask(msg){return new Promise(res=>{$('cmsg').innerHTML=msg;$('confirm').style.display='flex';
+  $('cyes').onclick=()=>{$('confirm').style.display='none';res(true)};$('cno').onclick=()=>{$('confirm').style.display='none';res(false)}})}
+async function decide(kind){
+  const s=queue[0];if(busy||!s||tab!=='review')return;
+  if(kind==='trash_old'&&!s.old)return toast('No emails older than 1 year from this sender.',false);
+  if(kind.startsWith('trash')&&s.protect){
+    const n=kind==='trash_all'?s.trashable:s.old;
+    if(!await ask(`<b>${esc(s.name||s.sender)}</b> matched “${esc(s.protect)}”, which usually means bank, tax, insurance or ID mail.<br><br>Trash <b>${n}</b> ${kind==='trash_old'?'emails older than 1 year':'emails'} anyway? (Recoverable for 30 days.)`)){spring();return}
+  }
+  busy=true;
+  const lab={trash_all:'🗑 Trashed all',trash_old:'🕰 Trashed old',keep:'✅ Kept',skip:'⏭ Skipped'}[kind];
+  card.style.transition='transform .22s ease-in';
+  card.style.transform=kind==='keep'?'translateX(130%) rotate(16deg)':kind==='trash_all'?'translateX(-130%) rotate(-16deg)':kind==='trash_old'?'translateY(110%)':'translateY(-110%)';
+  stamps(kind==='keep'?200:kind==='trash_all'?-200:0,kind==='trash_old'?200:0);
+  const n=kind==='trash_all'?s.trashable:kind==='trash_old'?s.old:0;
+  const slow=setTimeout(()=>{$('busymsg').textContent=`Moving ${n.toLocaleString()} emails to Trash…`;$('busy').style.display='flex'},350);
+  let r;try{r=await post('/act',{sender:s.sender,kind})}catch(e){r={ok:false,error:String(e)}}
+  clearTimeout(slow);$('busy').style.display='none';busy=false;
+  if(r.error){toast('⚠ Failed: '+r.error,false);await load();return}
+  toast(`${lab}: ${s.name||s.sender}${r.n?` · ${r.n} emails · ${mb(r.size)}`:''}${r.failed?` (⚠ ${r.failed} failed, try again)`:''}`);
+  await load();
+}
+function spring(){card.style.transition='transform .2s';card.style.transform='';stamps(0,0)}
+async function restore(id){
+  $('busymsg').textContent='Restoring…';$('busy').style.display='flex';
+  const r=await post('/undo',{id});$('busy').style.display='none';
+  toast(r.ok?(r.n?`↺ Restored ${r.n} emails`:'↺ Undone, back in To review'):`⚠ Restore incomplete (${r.failed} failed). Try again.`,false);await load();
+}
+async function undo(){
+  if(busy)return;busy=true;$('busymsg').textContent='Undoing…';$('busy').style.display='flex';
+  const r=await post('/undo_last',{});$('busy').style.display='none';busy=false;
+  if(r.none)return toast('Nothing to undo',false);
+  const L={trash_all:'🗑 Trash all',trash_old:'🕰 Trash old',keep:'✅ Keep',skip:'⏭ Skip'};
+  toast(r.ok?`↩ Undid ${L[r.kind]}: ${r.sender}${r.n?` · ${r.n} emails back`:''}. It's back in To review.`:`⚠ Undo incomplete (${r.failed} failed). Tap Undo again.`,false);
+  tab='review';await load();
+}
+let tt;function toast(m,u=true){$('tmsg').textContent=m;$('toast').style.display='flex';clearTimeout(tt);tt=setTimeout(()=>$('toast').style.display='none',4500)}
+$('undo').onclick=undo;$('undobtn').onclick=undo;$('bt').onclick=()=>decide('trash_all');$('bo').onclick=()=>decide('trash_old');$('bk').onclick=()=>decide('keep');$('skip').onclick=()=>decide('skip');
+
+// swipe: horizontal or downward drag; vertical scroll inside the card still works when the card is scrolled
+let sx=null,sy=0,dx=0,dy=0,lock=null;
+card.addEventListener('pointerdown',e=>{if(busy||e.target.closest('a'))return;sx=e.clientX;sy=e.clientY;dx=dy=0;lock=null;card.style.transition='none'});
+card.addEventListener('pointermove',e=>{if(sx===null)return;dx=e.clientX-sx;dy=e.clientY-sy;
+  if(!lock&&Math.hypot(dx,dy)>12)lock=Math.abs(dx)>Math.abs(dy)?'h':(dy>0&&card.scrollTop<=0?'v':'scroll');
+  if(lock==='scroll'||!lock)return;
+  if(lock==='h'){card.style.transform=`translateX(${dx}px) rotate(${dx/20}deg)`;stamps(dx,0)}
+  else{card.style.transform=`translateY(${Math.max(0,dy)}px)`;stamps(0,Math.max(0,dy))}
+  card.setPointerCapture(e.pointerId)});
+card.addEventListener('pointerup',()=>{if(sx===null)return;sx=null;
+  if(lock==='h'&&Math.abs(dx)>90)decide(dx>0?'keep':'trash_all');
+  else if(lock==='v'&&dy>90)decide('trash_old');else spring()});
+card.addEventListener('pointercancel',()=>{sx=null;spring()});
+
+onkeydown=e=>{if($('help').style.display==='block'){if(e.key==='Enter'||e.key==='Escape')closeHelp();return}
+  if($('confirm').style.display==='flex'){if(e.key==='Escape')$('cno').click();if(e.key==='Enter')$('cyes').click();return}
+  ({ArrowLeft:()=>decide('trash_all'),ArrowDown:()=>decide('trash_old'),ArrowRight:()=>decide('keep'),s:()=>decide('skip'),z:undo,'?':openHelp})[e.key]?.()};
+function openHelp(){$('help').style.display='block'}
+function closeHelp(){$('help').style.display='none';localStorage.seenMailHelp=1}
+$('helpbtn').onclick=openHelp;$('gotit').onclick=closeHelp;
+if(localStorage.cat)$('cat').value=localStorage.cat;if(localStorage.sort)$('sort').value=localStorage.sort;
+if(!localStorage.seenMailHelp)openHelp();
+load();setInterval(()=>{if(stats.indexing&&!busy&&tab==='review')fetch('/stats').then(r=>r.json()).then(s=>{stats=s;header()})},15000);
+</script>
+</body></html>
