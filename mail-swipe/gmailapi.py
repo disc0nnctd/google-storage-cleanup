@@ -27,6 +27,7 @@ def db():
         try:con.execute('alter table action add column notekey text')   # money-view decisions are remembered separately
         except sqlite3.OperationalError:pass
     con.execute('create table if not exists mail_type(sender text,tmpl text,type text,model text,at integer,primary key(sender,tmpl))')
+    con.execute('create table if not exists pattern_override(sender text,tmpl text,prev_type text,prev_model text,at integer,primary key(sender,tmpl))')
     con.execute('''create table if not exists unsub_log(id integer primary key,sender text,at integer,method text,ok integer,
         detail text,response text,target text,list_unsub text,list_unsub_post text,msg text)''')
     con.execute('create table if not exists unsubs(sender text primary key,method text,status text,detail text,at integer)')

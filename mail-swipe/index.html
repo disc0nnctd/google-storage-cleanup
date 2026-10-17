@@ -167,6 +167,7 @@ kbd{background:#333946;border-radius:4px;padding:1px 6px;font-size:12px;color:#e
   <p style="color:var(--mut);font-size:13px;margin:8px 0 0">The AI decides every email. It keeps orders, receipts, statements, anything with an attachment, mail from people, mail you sent, starred mail and senders you kept. It deletes promotions, newsletters and social pings, plus status alerts after 90 days, OTPs after 7 days and notices after 1 year. Everything goes to Gmail's Trash (30 days), and one ↩ Undo reverses a whole run.</p>
   <div class="sec" id="autosum">Working it out…</div>
   <div class="sec"><h3>🔎 Second-opinion check</h3><div id="autoaudit"></div></div>
+  <div class="sec"><h3>🛡 Your “keep this kind” rules (<span id="autorulesn">0</span>)</h3><div id="autorules"></div></div>
   <div class="sec"><h3>🎲 Random sample of deletions</h3><p style="color:var(--mut);font-size:12.5px;margin:0">Tap <b>Keep this kind</b> on anything that shouldn't go. That whole pattern becomes a record and is never auto-deleted.</p><div id="autosample"></div>
     <button class="icon" id="automore" style="margin-top:8px">🎲 Another 40</button></div>
   <div class="sec"><h3>Run</h3>
@@ -314,10 +315,26 @@ let cancelledN=0;
 const tdate=t=>new Date(t*1000).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'});
 const TYN={txn_alert:'status alert',otp_security:'OTP/login',marketing:'promotion',notice:'notice',record:'record'};
 function emRow(m,why){return `<div class="em"><div><b>${esc(m.subject||'(no subject)')}</b><span>${esc(m.sender)} · ${tdate(m.date)} · ${esc(m.category||'')}${m.type?' · '+TYN[m.type]:''}${why?' · ⚠ '+esc(why):''}</span></div><button data-id="${esc(m.id)}">Keep this kind</button></div>`}
-function wireKeep(el){el.querySelectorAll('.em button').forEach(b=>b.onclick=async()=>{b.disabled=true;
-  const r=await post('/auto/keep_pattern',{id:b.dataset.id});b.textContent=r.ok?`✅ kept (${r.emails})`:'⚠';
-  toast(r.ok?`✅ “${r.pattern}” from ${r.sender} is now a record: ${r.emails} emails kept, never auto-deleted.`:'⚠ failed',false);autoSum()})}
+function wireKeep(el){el.querySelectorAll('.em button').forEach(b=>b.onclick=async()=>{
+  if(b.dataset.undo){   // second tap: undo this rule
+    b.disabled=true;const r=await post('/auto/unkeep_pattern',{sender:b.dataset.s,tmpl:b.dataset.t});
+    b.disabled=false;delete b.dataset.undo;b.textContent='Keep this kind';b.style.background='';b.style.color='';
+    toast(r.ok?'↩ Rule removed. That kind can be auto-deleted again.':'⚠ '+(r.error||'failed'),false);autoSum();return}
+  b.disabled=true;const r=await post('/auto/keep_pattern',{id:b.dataset.id});b.disabled=false;
+  if(!r.ok){b.textContent='⚠';return}
+  b.dataset.undo=1;b.dataset.s=r.sender;b.dataset.t=r.pattern;b.textContent=`↩ Undo (kept ${r.emails})`;b.style.background='#3a2a2a';b.style.color='#ffc9c9';
+  toast(`✅ “${r.pattern}” from ${r.sender} is now kept (${r.emails} emails). Tap ↩ Undo to reverse.`,false);autoSum()})}
+async function autoRules(){
+  const o=await fetch('/auto/overrides').then(r=>r.json());
+  $('autorules').innerHTML=o.length?o.map(x=>`<div class="em"><div><b>${esc(x.tmpl)}</b><span>${esc(x.sender)} · ${x.emails} emails · added ${ago(x.at)}${x.prev?' · was '+TYN[x.prev]:''}</span></div><button data-s="${esc(x.sender)}" data-t="${esc(x.tmpl)}" style="background:#3a2a2a;color:#ffc9c9">Remove</button></div>`).join('')
+    :'<p style="color:var(--mut);font-size:13px;margin:0">None yet. Tap “Keep this kind” on an email below to add one.</p>';
+  $('autorules').querySelectorAll('button').forEach(b=>b.onclick=async()=>{b.disabled=true;
+    const r=await post('/auto/unkeep_pattern',{sender:b.dataset.s,tmpl:b.dataset.t});
+    toast(r.ok?'↩ Rule removed.':'⚠ '+(r.error||'failed'),false);autoRules();autoSum()});
+  $('autorulesn').textContent=o.length;
+}
 async function autoSum(){
+  autoRules();
   const p=await fetch('/auto/plan').then(r=>r.json());
   const tbl=(rows)=>`<table>${rows.slice(0,14).map(([k,n,sz])=>`<tr><td>${esc(k)}</td><td class="n">${n.toLocaleString()}</td><td class="n">${mb(sz)}</td></tr>`).join('')}</table>`;
   $('autosum').innerHTML=`<h3>Plan right now</h3><p style="font-size:14px;margin:4px 0">🗑 Trash <b>${p.trash_n.toLocaleString()}</b> emails · <b>${mb(p.trash_size)}</b><br>✅ Keep <b>${p.keep_n.toLocaleString()}</b> emails · ${mb(p.keep_size)}</p>

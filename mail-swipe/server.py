@@ -460,6 +460,15 @@ class H(BaseHTTPRequestHandler):
         if u.path=='/stats':return s.send(200,stats())
         if u.path=='/auto/plan':return s.send(200,dict(auto_plan(),daily=setting('auto_daily',False),last=setting('auto_last'),audit=setting('auto_audit')))
         if u.path=='/auto/sample':return s.send(200,auto_sample(int(q.get('n',['40'])[0]),q.get('side',['trash'])[0],q.get('jury',['1'])[0]!='0'))
+        if u.path=='/auto/overrides':
+            c=db();out=[]
+            for r in c.execute("select sender,tmpl,at from mail_type where model='user' and (sender,tmpl) not in (select sender,tmpl from pattern_override)").fetchall():
+                c.execute('insert into pattern_override values(?,?,?,?,?)',(r['sender'],r['tmpl'],None,None,r['at']))   # rules made before undo existed
+            c.commit()
+            for o in c.execute('select * from pattern_override order by at desc').fetchall():
+                n=sum(1 for r in c.execute("select subject from msg where sender=? and state='live'",(o['sender'],)) if tmpl(r['subject'])==o['tmpl'])
+                out.append(dict(sender=o['sender'],tmpl=o['tmpl'],prev=o['prev_type'],at=o['at'],emails=n))
+            return s.send(200,out)
         if u.path=='/unsub_log':
             rows=[dict(r) for r in db().execute('select * from unsub_log order by id desc limit 300')]
             return s.send(200,rows)
@@ -483,9 +492,21 @@ class H(BaseHTTPRequestHandler):
             if s.path=='/auto/keep_pattern':   # user override: this subject pattern is a record, never auto-deleted
                 c=db();m=c.execute('select sender,subject from msg where id=?',(d['id'],)).fetchone()
                 if not m:return s.send(404,dict(ok=False))
-                c.execute("insert or replace into mail_type values(?,?,'record','user',?)",(m['sender'],tmpl(m['subject']),int(time.time())));c.commit()
+                k=(m['sender'],tmpl(m['subject']))
+                prev=c.execute('select type,model from mail_type where sender=? and tmpl=?',k).fetchone()
+                if not c.execute('select 1 from pattern_override where sender=? and tmpl=?',k).fetchone():   # remember what it was, for undo
+                    c.execute('insert into pattern_override values(?,?,?,?,?)',(k[0],k[1],prev['type'] if prev and prev['model']!='user' else None,prev['model'] if prev and prev['model']!='user' else None,int(time.time())))
+                c.execute("insert or replace into mail_type values(?,?,'record','user',?)",(k[0],k[1],int(time.time())));c.commit()
                 n=sum(1 for r in c.execute("select subject from msg where sender=? and state='live'",(m['sender'],)) if tmpl(r['subject'])==tmpl(m['subject']))
                 return s.send(200,dict(ok=True,pattern=tmpl(m['subject']),sender=m['sender'],emails=n))
+            if s.path=='/auto/unkeep_pattern':   # undo a 'Keep this kind'
+                c=db();k=(d['sender'],d['tmpl'])
+                o=c.execute('select * from pattern_override where sender=? and tmpl=?',k).fetchone()
+                if not o:return s.send(200,dict(ok=False,error='no such rule'))
+                if o['prev_type']:c.execute('insert or replace into mail_type values(?,?,?,?,?)',(k[0],k[1],o['prev_type'],o['prev_model'],int(time.time())))
+                else:c.execute('delete from mail_type where sender=? and tmpl=?',k)   # re-typed by the next classify run
+                c.execute('delete from pattern_override where sender=? and tmpl=?',k);c.commit()
+                return s.send(200,dict(ok=True,restored=o['prev_type']))
             if s.path=='/auto/daily':
                 c=db();c.execute("insert or replace into settings values('auto_daily',?)",(json.dumps(bool(d.get('on'))),));c.commit()
                 return s.send(200,dict(ok=True,daily=bool(d.get('on'))))
