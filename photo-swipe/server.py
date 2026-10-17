@@ -5,7 +5,20 @@ LOCK=threading.RLock()   # requests run in threads; all state changes + saves go
 from http.server import ThreadingHTTPServer,BaseHTTPRequestHandler
 from urllib.parse import urlparse,parse_qs
 from PIL import Image,ImageOps
-import phonesync
+import phonesync,subprocess
+DRIVE_PY=os.path.expanduser(os.environ.get('DRIVE_PY','~/.gmail-fetch/venv/bin/python'))
+DRIVE_TOOL=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),'tools','drive_remove.py')
+djob=dict(state='idle')   # Drive removal runs in the background: plan / apply / undo / empty
+def drive_run(kind,*args):
+    djob.clear();djob.update(state='running',kind=kind,started=int(time.time()))
+    def go():
+        try:
+            r=subprocess.run([DRIVE_PY,DRIVE_TOOL,kind,*args],capture_output=True,text=True,timeout=7200)
+            out=r.stdout.strip().splitlines()
+            djob.update(state='done' if r.returncode==0 else 'error',result=json.loads(out[-1]) if r.returncode==0 and out else None,
+                error=None if r.returncode==0 else (r.stderr.strip().splitlines() or ['failed'])[-1][:300])
+        except Exception as e:djob.update(state='error',error=str(e)[:300])
+    threading.Thread(target=go,daemon=True).start()
 ROOT=os.path.realpath(sys.argv[1] if len(sys.argv)>1 else '/mnt/expansion/gdrive-backup')
 PORT=int(sys.argv[2]) if len(sys.argv)>2 else 8091
 HERE=os.path.dirname(os.path.abspath(__file__));DEC=os.path.join(HERE,'decisions.json');CACHE=os.path.join(HERE,'thumbs')
@@ -62,6 +75,7 @@ class H(BaseHTTPRequestHandler):
         if u.path=='/sync/status':
             try:return s.send(200,json.dumps(phonesync.status(decs,ROOT)).encode(),'application/json')
             except Exception as e:return s.send(200,json.dumps(dict(error=str(e)[:200])).encode(),'application/json')
+        if u.path=='/drive/job':return s.send(200,json.dumps(dict(djob,has_token=os.path.exists(os.path.expanduser(os.environ.get('DRIVE_TOKEN_RW','~/.config/google-storage-cleanup/drive_token.json'))))).encode(),'application/json')
         if u.path=='/sync/qr.svg':
             return s.send(200,phonesync.qr_svg(phonesync.st('/rest/system/status')['myID']),'image/svg+xml')
         if u.path=='/meta':
@@ -107,6 +121,17 @@ class H(BaseHTTPRequestHandler):
             try:r=phonesync.apply(decs,ROOT) if s.path=='/sync/apply' else phonesync.accept(d['id'])
             except Exception as e:r=dict(ok=False,error=str(e)[:300])
             return s.send(200,json.dumps(r).encode(),'application/json')
+        if s.path.startswith('/drive/'):
+            n=int(s.headers.get('Content-Length') or 0);d=json.loads(s.rfile.read(n) or b'{}')
+            if djob.get('state')=='running':return s.send(200,b'{"ok":false,"error":"busy"}','application/json')
+            labels=','.join(l for l in d.get('labels',[]) if l in('delete','local','photos')) or 'delete,local'
+            k=s.path[7:]
+            if k=='plan':drive_run('plan',ROOT,DEC,labels,'--json')
+            elif k=='apply' and d.get('confirm')=='yes':drive_run('apply',ROOT,DEC,labels)
+            elif k=='undo':drive_run('undo',ROOT)
+            elif k=='empty' and d.get('confirm')=='yes':drive_run('empty')
+            else:return s.send(400,b'{"ok":false}','application/json')
+            return s.send(200,b'{"ok":true}','application/json')
         if s.path=='/bulk':
             # whole folder -> one label, as ONE undo step. Only unsorted items unless all=True.
             d=json.loads(s.rfile.read(int(s.headers['Content-Length'])))

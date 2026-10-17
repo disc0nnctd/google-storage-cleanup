@@ -158,8 +158,14 @@ h1{white-space:nowrap}
 
   <div class="sec">
     <h3>4 · Clean up Google Drive</h3>
-    <p>Removing <b>💾 Local only</b> and <b>🗑 Delete</b> files from Google Drive needs a one-time Google sign-in with delete permission. Ask Claude to set it up, and this button switches on.</p>
-    <button class="big" style="background:var(--delete)" disabled>🧹 Remove from Google Drive</button>
+    <p>Moves files out of Google Drive into Drive's <b>Trash</b>, only when the copy on this disk matches Drive exactly (checked file by file). Your copies here stay.</p>
+    <div id="dinfo"><p style="color:var(--mut)">Checking…</p></div>
+    <label style="display:block;margin:8px 0"><input type="checkbox" id="dphotos"> Also remove the <b>🖼 Google Photos</b> ones. Tick only after Google Photos on the phone shows them as backed up.</label>
+    <button class="big" id="dplan" style="background:#333946">🔍 Check what would go</button>
+    <button class="big" id="dgo" style="background:var(--delete)" disabled>🧹 Move to Drive Trash</button>
+    <button class="big" id="dundo" style="background:#333946">↩ Restore last removal</button>
+    <button class="big" id="dempty" style="background:#5a2a2a">🔥 Empty Drive Trash (frees the space, permanent)</button>
+    <p style="color:var(--mut);font-size:12.5px">Drive Trash still counts toward your 15 GB until it's emptied (or 30 days pass). 💾 Local-only and 🗑 Delete files are always included; ☁️ Drive ones are never touched.</p>
   </div>
 </div>
 
@@ -353,11 +359,42 @@ async function syncRefresh(){
     const r=await fetch('/sync/accept',{method:'POST',body:JSON.stringify({id:b.dataset.id})}).then(r=>r.json());
     toast(r.ok===false?'⚠ '+r.error:'✅ Phone added. Now accept the folder on the phone (step 4).',false);syncRefresh()});
 }
-$('syncbtn').onclick=()=>{$('syncp').style.display='block';$('qr').src='/sync/qr.svg';syncRefresh();clearInterval(syncTimer);syncTimer=setInterval(syncRefresh,5000)};
+$('syncbtn').onclick=()=>{$('syncp').style.display='block';dPoll();$('qr').src='/sync/qr.svg';syncRefresh();clearInterval(syncTimer);syncTimer=setInterval(syncRefresh,5000)};
 $('syncclose').onclick=()=>{$('syncp').style.display='none';clearInterval(syncTimer)};
 $('sendbtn').onclick=async()=>{const b=$('sendbtn');b.disabled=true;b.textContent='Preparing… (copying files, up to a minute)';
   const r=await fetch('/sync/apply',{method:'POST'}).then(r=>r.json());
   toast(r.error?'⚠ '+r.error:`📤 ${r.added} added${r.removed?`, ${r.removed} removed`:''}${r.failed?` · ⚠ ${r.failed} failed: ${r.errors[0]}`:''}. Syncthing is copying them to the phone.`,false);syncRefresh()};
+
+
+// ---- Drive cleanup ----
+const dlabels=()=>['delete','local'].concat($('dphotos').checked?['photos']:[]);
+const LN={delete:'🗑 Delete',local:'💾 Local only',photos:'🖼 Google Photos'};
+let dTimer=null,lastPlan=null;
+async function dPoll(){
+  const j=await fetch('/drive/job').then(r=>r.json());
+  if(!j.has_token){$('dinfo').innerHTML='<p>⚠ No Google sign-in with delete permission yet.</p>';['dplan','dgo','dundo','dempty'].forEach(i=>$(i).disabled=true);return}
+  const busy=j.state==='running';['dplan','dundo','dempty'].forEach(i=>$(i).disabled=busy);
+  if(busy){$('dinfo').innerHTML=`<p><span class="pill wait">Working…</span> ${({plan:'checking every file against Drive (about a minute)',apply:'moving files to Drive Trash',undo:'restoring files',empty:'emptying Drive Trash'})[j.kind]}</p>`;$('dgo').disabled=true;return}
+  clearInterval(dTimer);dTimer=null;
+  if(j.state==='error'){$('dinfo').innerHTML=`<p>⚠ ${esc(j.error||'failed')}</p>`;return}
+  const r=j.result||{};
+  if(j.kind==='plan'&&j.state==='done'){lastPlan=r;
+    const rows=Object.entries(r.by).map(([k,v])=>`<tr><td>${LN[k]}</td><td>${v.n}</td><td>${(v.bytes/1e6).toFixed(0)} MB</td></tr>`).join('');
+    const tot=Object.values(r.by).reduce((a,v)=>a+v.n,0);
+    $('dinfo').innerHTML=rows?`<table style="width:100%"><tr><th align=left>Bucket</th><th>Files</th><th>Size</th></tr>${rows}</table>${r.skipped?`<p>${r.skipped} skipped (no matching copy here), kept on Drive.</p>`:''}`:'<p>✅ Nothing left to remove.</p>';
+    $('dgo').disabled=!tot;$('dgo').textContent=`🧹 Move ${tot} files to Drive Trash`}
+  else if(j.kind==='apply')$('dinfo').innerHTML=`<p>✅ ${r.trashed} files (${(r.bytes/1e6).toFixed(0)} MB) moved to Drive Trash.${r.failed&&r.failed.length?` ⚠ ${r.failed.length} failed.`:''} Restore with ↩ if needed, or empty the trash to free the space.</p>`;
+  else if(j.kind==='undo')$('dinfo').innerHTML=`<p>↩ ${r.restored} files restored to Drive.</p>`;
+  else if(j.kind==='empty')$('dinfo').innerHTML='<p>🔥 Drive Trash emptied. The space frees up within a few minutes.</p>';
+  else $('dinfo').innerHTML='<p>Press <b>Check</b> first.</p>';
+}
+async function dStart(kind,body={}){const r=await fetch('/drive/'+kind,{method:'POST',body:JSON.stringify(Object.assign({labels:dlabels()},body))}).then(r=>r.json());
+  if(r.ok===false)toast('⚠ '+(r.error||'not allowed'),false);clearInterval(dTimer);dTimer=setInterval(dPoll,2000);dPoll()}
+$('dplan').onclick=()=>dStart('plan');
+$('dphotos').onchange=()=>{$('dgo').disabled=true;$('dinfo').innerHTML='<p>Press <b>Check</b> again.</p>'};
+$('dgo').onclick=()=>{const n=Object.values(lastPlan?.by||{}).reduce((a,v)=>a+v.n,0);if(confirm(`Move ${n} files to Google Drive Trash? You can restore them for 30 days.`))dStart('apply',{confirm:'yes'})};
+$('dundo').onclick=()=>{if(confirm('Restore the files from the last removal back into Drive?'))dStart('undo')};
+$('dempty').onclick=()=>{if(confirm('Permanently empty Google Drive Trash? This includes anything else in Drive Trash and cannot be undone.'))dStart('empty',{confirm:'yes'})};
 
 // ---- whole-folder moves ----
 const fname=f=>f==='(top level)'?'top level':f.split('/').slice(-2).join(' › ');
