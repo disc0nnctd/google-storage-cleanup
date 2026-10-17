@@ -180,6 +180,14 @@ def worker():
                 if Q and Q[0] is it:Q.popleft()
                 QSTAT['done']+=1;QSTAT['current']=None
             bump()
+def recover():
+    # queue is in memory: senders hidden for a trash that never ran (restart mid-queue) come back for review
+    c=db()
+    n=c.execute("""delete from sender_note where decision in('trashed','trimmed')
+                   and sender not in (select sender from action where kind like 'trash%')""").rowcount
+    c.commit()
+    if n:print(f'recovered {n} senders whose queued trash never ran',flush=True)
+recover()
 threading.Thread(target=worker,daemon=True).start()
 def queue_status():
     with QLOCK:
