@@ -17,8 +17,8 @@ served only on your Tailscale network.
 2. **Config.** `cp config.example.env ~/.config/google-storage-cleanup/config.env`, fill it in, then `chmod 600` it.
 3. **Python.** Photo Swipe needs `pillow` and `qrcode`. Mail Swipe and the tools need `google-api-python-client` and `google-auth`.
 4. **Back up Drive.** `DRIVE_TOKEN=... tools/drive_backup.py backup /mnt/expansion/gdrive-backup`
-5. **Index Gmail, then classify.** `python classify.py` (about 15 min for ~3k senders) adds the 🤖 suggestions, filters and *Accept all*.
-   **Index:** `cd mail-swipe && GMAIL_TOKEN=... python index.py` (metadata only; about 40 min for 80k emails; re-run any time for new mail).
+5. **Index Gmail.** `cd mail-swipe && GMAIL_TOKEN=... python index.py` (metadata only; about 40 min for 80k emails; re-run any time for new mail).
+   **Then classify.** `python classify.py` (about 15 min for ~3k senders) adds the 🤖 suggestions, filters and *Accept all*.
 6. **Install services.** `deploy/install.sh /mnt/expansion/gdrive-backup /path/to/venv/bin/python`
 7. **Phone sync (optional).** `sudo apt install syncthing && sudo systemctl enable --now syncthing@$USER`, then follow
    the 📱 Send panel. Install Syncthing-Fork on the phone, scan the QR code, accept the folder as *Receive only*,
