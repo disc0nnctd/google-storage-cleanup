@@ -43,10 +43,13 @@ def eligible(r):
 _cache={};_ver=[0]
 def bump():_ver[0]+=1;_cache.clear()
 def senders(cat):
-    if cat in _cache:return _cache[cat]
-    _cache[cat]=_senders(cat);return _cache[cat]
+    aiv=db().execute('select count(*),max(at) from sender_ai').fetchone()   # new AI results also refresh the list
+    k=(cat,aiv[0],aiv[1])
+    if k in _cache:return _cache[k]
+    _cache[k]=_senders(cat);return _cache[k]
 def _senders(cat):
     con=db();notes={r['sender']:r['decision'] for r in con.execute('select * from sender_note')}
+    ai={r['sender']:r for r in con.execute('select * from sender_ai')}
     rows=con.execute("select * from msg where state='live'").fetchall()
     g={}
     want=CATS.get(cat)
@@ -73,6 +76,8 @@ def _senders(cat):
         if s['sender']==me():continue
         s['subjects']=[t for _,t in sorted(s['subjects'],reverse=True)[:6]]
         s['note']=notes.get(s['sender'])
+        a=ai.get(s['sender'])
+        s['ai']=dict(action=a['action'],category=a['category'],sub=a['subcategory'],conf=a['confidence'],reason=a['reason']) if a else None
         hit=PROTECT.search(' '.join([s['sender'],s['name']]+s['subjects']))
         s['protect']=hit.group(0) if hit else ''
         out.append(s)
@@ -96,26 +101,27 @@ def batch_call(ids,method):
         if todo:time.sleep(2*tries)
     return ok,todo
 
-def act(sender,kind):
-    try:return _act(sender,kind)
+def act(sender,kind,batch=None,cat='all'):
+    try:return _act(sender,kind,batch,cat)
     finally:bump()   # after the change, so a read mid-action can't cache stale data
-def _act(sender,kind):
+def _act(sender,kind,batch=None,cat='all'):
     with lock:
         con=db()
         if kind in('keep','skip'):
             con.execute('insert or replace into sender_note values(?,?,?)',(sender,kind,int(time.time())))
-            aid=con.execute('insert into action(at,sender,kind,ids) values(?,?,?,?)',(int(time.time()),sender,kind,'[]')).lastrowid;con.commit()
+            aid=con.execute('insert into action(at,sender,kind,ids,batch) values(?,?,?,?,?)',(int(time.time()),sender,kind,'[]',batch)).lastrowid;con.commit()
             return dict(ok=True,n=0,id=aid)
         if kind=='unnote':
             con.execute('delete from sender_note where sender=?',(sender,));con.commit();return dict(ok=True,n=0)
         rows=[r for r in con.execute("select * from msg where sender=? and state='live'",(sender,)) if eligible(r)]
+        if CATS.get(cat):rows=[r for r in rows if CATS[cat] in r['labels'].split(',')]   # only the Gmail tab the card showed
         if kind=='trash_old':rows=[r for r in rows if r['date']<time.time()-YEAR]
         ids=[r['id'] for r in rows]
         if not ids:return dict(ok=True,n=0,size=0,id=None)
         ok,bad=batch_call(ids,'trash')
         con.executemany("update msg set state='trashed' where id=?",[(i,) for i in ok])
         size=sum(r['size'] for r in rows if r['id'] in set(ok))
-        aid=con.execute('insert into action(at,sender,kind,ids) values(?,?,?,?)',(int(time.time()),sender,kind,json.dumps(ok))).lastrowid
+        aid=con.execute('insert into action(at,sender,kind,ids,batch) values(?,?,?,?,?)',(int(time.time()),sender,kind,json.dumps(ok),batch)).lastrowid
         con.execute('insert or replace into sender_note values(?,?,?)',(sender,'trashed' if kind=='trash_all' else 'trimmed',int(time.time())))
         con.commit()
         return dict(ok=not bad,n=len(ok),failed=len(bad),size=size,id=aid)
@@ -140,6 +146,40 @@ def _undo(action_id):
         con.commit()
         return dict(ok=not bad,n=len(ok),failed=len(bad))
 
+JOB={'running':False}
+def start_job(title,work):
+    if JOB.get('running'):return dict(ok=False,error='Another bulk job is still running')
+    JOB.clear();JOB.update(running=True,title=title,done=0,total=0,emails=0,size=0,failed=0,error=None)
+    def run():
+        try:work(JOB)
+        except Exception as e:JOB['error']=str(e)[:300]
+        finally:JOB['running']=False;bump()
+    threading.Thread(target=run,daemon=True).start()
+    return dict(ok=True)
+
+def accept_ai(senders_list,cat='all'):
+    batch=int(time.time()*1000)
+    def work(j):
+        j['total']=len(senders_list);j['batch']=batch
+        for snd in senders_list:
+            a=db().execute('select action from sender_ai where sender=?',(snd,)).fetchone()
+            if not a or a['action'] not in('trash_all','trash_old','keep'):j['done']+=1;continue
+            r=act(snd,a['action'],batch,cat)
+            j['done']+=1;j['emails']+=r.get('n',0);j['size']+=r.get('size',0) or 0;j['failed']+=r.get('failed',0) or 0
+    return start_job('Applying AI suggestions',work)
+
+def undo_last_job():
+    con=db();a=con.execute('select id,sender,kind,batch from action order by id desc limit 1').fetchone()
+    if not a:return dict(ok=False,none=True)
+    if not a['batch']:
+        r=undo(a['id']);r.update(sender=a['sender'],kind=a['kind']);return r
+    ids=[r['id'] for r in con.execute('select id from action where batch=?',(a['batch'],))]
+    def work(j):
+        j['total']=len(ids)
+        for i in ids:
+            r=undo(i);j['done']+=1;j['emails']+=r.get('n',0);j['failed']+=r.get('failed',0)
+    r=start_job('Undoing bulk action',work);r.update(job=True,senders=len(ids));return r
+
 def history():
     con=db();out=[]
     for a in con.execute("select * from action where kind like 'trash%' order by at desc limit 500"):
@@ -156,7 +196,10 @@ def stats():
     tr=con.execute("select count(*),coalesce(sum(size),0) from msg where state='trashed'").fetchone()
     log=open(LOG).read().split('\n') if os.path.exists(LOG) else []
     indexing=not any(l.startswith('DONE') for l in log)
-    last=con.execute('select sender,kind from action order by id desc limit 1').fetchone()
+    last=con.execute('select sender,kind,batch from action order by id desc limit 1').fetchone()
+    if last and last['batch']:
+        n=con.execute('select count(*) from action where batch=?',(last['batch'],)).fetchone()[0]
+        last=dict(sender=f'{n} senders',kind='bulk',batch=last['batch'])
     return dict(live=live[0],live_size=live[1],trashed=tr[0],trashed_size=tr[1],indexing=indexing,total=profile().get('messagesTotal',0),
                 actions=con.execute('select count(*) from action').fetchone()[0],last=dict(last) if last else None)
 
@@ -172,16 +215,15 @@ class H(BaseHTTPRequestHandler):
         if u.path=='/senders':return s.send(200,senders(q.get('cat',['promotions'])[0]))
         if u.path=='/history':return s.send(200,history())
         if u.path=='/stats':return s.send(200,stats())
+        if u.path=='/job':return s.send(200,{k:v for k,v in JOB.items()})
         s.send(404,{})
     def do_POST(s):
         d=json.loads(s.rfile.read(int(s.headers.get('Content-Length',0))) or b'{}')
         try:
-            if s.path=='/act':return s.send(200,act(d['sender'],d['kind']))
+            if s.path=='/act':return s.send(200,act(d['sender'],d['kind'],cat=d.get('cat','all')))
             if s.path=='/undo':return s.send(200,undo(int(d['id'])))
-            if s.path=='/undo_last':
-                a=db().execute('select id,sender,kind from action order by id desc limit 1').fetchone()
-                if not a:return s.send(200,dict(ok=False,none=True))
-                r=undo(a['id']);r.update(sender=a['sender'],kind=a['kind']);return s.send(200,r)
+            if s.path=='/undo_last':return s.send(200,undo_last_job())
+            if s.path=='/accept_ai':return s.send(200,accept_ai(d['senders'],d.get('cat','all')))
         except Exception as e:
             return s.send(500,dict(ok=False,error=str(e)[:300]))
         s.send(404,{})

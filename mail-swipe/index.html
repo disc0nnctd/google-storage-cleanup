@@ -79,6 +79,20 @@ kbd{background:#333946;border-radius:4px;padding:1px 6px;font-size:12px;color:#e
 #gotit{position:sticky;bottom:0;width:100%;padding:14px;border:0;border-radius:12px;background:#eef1f6;color:#111;font-size:16px;font-weight:700;margin-bottom:14px;box-shadow:0 -12px 20px #08090c}
 #empty{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;text-align:center;color:var(--mut);padding:20px}
 #empty h2{color:#eef1f6}
+#aibox{margin-top:10px;border-radius:10px;padding:9px 11px;font-size:13.5px;border:1px solid #2f3a52;background:#1b2233}
+#aibox b.a{font-size:14.5px}
+#aibox .why{color:#c9d0db;margin-top:3px}
+#aibox .meta{color:var(--mut);font-size:12px;margin-top:3px}
+.act.sugg{outline:3px solid #fff;outline-offset:2px;box-shadow:0 0 16px #ffffff55}
+.act .ai{font-size:10.5px;font-weight:700;background:#0005;border-radius:6px;padding:0 5px;margin-top:2px;display:none}
+.act.sugg .ai{display:inline-block}
+#skiprow{gap:8px;align-items:center}
+#doai,#bulkai{border:0;border-radius:9px;padding:7px 11px;font-size:13px;font-weight:600;color:#fff;background:#3b4a78}
+#bulkai{background:#5a3b78}
+#job{position:fixed;inset:0;background:#000b;z-index:16;display:none;align-items:center;justify-content:center}
+#job .box{background:#22262f;border-radius:14px;padding:18px 20px;width:min(360px,90vw)}
+#job .bar{height:8px;background:#333946;border-radius:4px;overflow:hidden;margin:10px 0}
+#job .bar i{display:block;height:100%;background:#7fb3ff;width:0}
 </style></head>
 <body>
 <header>
@@ -93,7 +107,8 @@ kbd{background:#333946;border-radius:4px;padding:1px 6px;font-size:12px;color:#e
       <option value="updates">Updates</option><option value="forums">Forums</option>
       <option value="primary">Primary</option><option value="all">All mail</option>
     </select>
-    <select id="sort" title="Order"><option value="size">Biggest</option><option value="n">Most emails</option><option value="old">Oldest</option></select>
+    <select id="aif" title="AI filter"><option value="">🤖 All</option></select>
+    <select id="sort" title="Order"><option value="size">Biggest</option><option value="n">Most emails</option><option value="old">Oldest</option><option value="ai">🤖 Surest trash first</option></select>
   </div>
   <div class="sum" id="sum"></div>
   <div id="idx"></div>
@@ -110,11 +125,12 @@ kbd{background:#333946;border-radius:4px;padding:1px 6px;font-size:12px;color:#e
 </div>
 
 <div id="bar">
-  <button class="act" id="bt">🗑 Trash all<small id="bt-s"></small><span class="k">swipe ← · key ←</span></button>
-  <button class="act" id="bo">🕰 Trash old<small id="bo-s"></small><span class="k">swipe ↓ · key ↓</span></button>
-  <button class="act" id="bk">✅ Keep<small>never ask again</small><span class="k">swipe → · key →</span></button>
+  <button class="act" id="bt">🗑 Trash all<small id="bt-s"></small><span class="ai">🤖 suggested</span><span class="k">swipe ← · key ←</span></button>
+  <button class="act" id="bo">🕰 Trash old<small id="bo-s"></small><span class="ai">🤖 suggested</span><span class="k">swipe ↓ · key ↓</span></button>
+  <button class="act" id="bk">✅ Keep<small>never ask again</small><span class="ai">🤖 suggested</span><span class="k">swipe → · key →</span></button>
 </div>
-<div id="skiprow"><button id="skip">Skip for now (S) ›</button></div>
+<div id="skiprow"><button id="doai" title="Do what the AI suggests (key A)">🤖 Do suggestion (A)</button><button id="bulkai" style="display:none"></button><button id="skip">Skip (S) ›</button></div>
+<div id="job"><div class="box"><b id="jobt">Working…</b><div class="bar"><i id="jobbar"></i></div><div id="jobm" style="font-size:13px;color:#c9d0db"></div></div></div>
 
 <div id="toast"><span id="tmsg"></span><button id="undo" hidden></button></div>
 <div id="busy"><div id="busymsg">Working…</div></div>
@@ -142,6 +158,7 @@ kbd{background:#333946;border-radius:4px;padding:1px 6px;font-size:12px;color:#e
     • <b>↩ Undo</b> (top) reverses your last action, again and again, even after closing the page. The <b>Trashed</b> tab can restore any sender later.<br>
     • <b>Starred</b> emails and emails <b>you sent</b> are never touched.<br>
     • Senders that look like <b>bank / tax / insurance / ID / medical</b> get a red warning and ask before trashing.<br><br>
+    <b>🤖 AI suggestions:</b> every sender has been sorted by an AI into a category (Shopping, Banking, Social…) with a suggested action and a one-line reason, shown on the card. The suggested button gets a white ring. <b>🤖 Do suggestion</b> (key <kbd>A</kbd>) applies it. Use the <b>🤖 menu</b> (top) to show one category or one suggestion type, then <b>Accept all</b> applies every confident suggestion in that view at once (bank/tax-looking senders and unsure ones are left for you). One <b>↩ Undo</b> reverses the whole batch. The AI only saw sender names, counts and subject lines, never email bodies.<br><br>
     <b>Skip</b> hides a sender for now (it's listed in the Kept &amp; skipped tab).<br>
     <b>Unsubscribe</b> on the card opens the sender's own unsubscribe page, so new mail stops too.<br>
     <b>Keyboard:</b> <kbd>←</kbd> trash all · <kbd>↓</kbd> trash old · <kbd>→</kbd> keep · <kbd>S</kbd> skip · <kbd>Z</kbd> undo · <kbd>?</kbd> help<br>
@@ -163,16 +180,66 @@ async function load(){
   const [s,st,h]=await Promise.all([fetch('/senders?cat='+$('cat').value).then(r=>r.json()),fetch('/stats').then(r=>r.json()),fetch('/history').then(r=>r.json())]);
   all=s;stats=st;hdata=h;build();render();
 }
+const AIL={trash_all:'🗑 Trash all',trash_old:'🕰 Trash old',keep:'✅ Keep',review:'🤔 Review'};
+const AICOL={trash_all:'var(--trash)',trash_old:'var(--old)',keep:'var(--keep)',review:'#7fb3ff'};
+function aiOptions(){
+  const base=all.filter(s=>!s.note&&s.trashable>0),cur=$('aif').value;
+  const n=f=>base.filter(f).length;
+  const acts=Object.keys(AIL).map(a=>`<option value="a:${a}">🤖 ${AIL[a]} (${n(s=>s.ai&&s.ai.action===a)})</option>`).join('');
+  const cats={};base.forEach(s=>{if(s.ai)cats[s.ai.category]=(cats[s.ai.category]||0)+1});
+  const co=Object.entries(cats).sort((a,b)=>b[1]-a[1]).map(([c,k])=>`<option value="c:${esc(c)}">${esc(c)} (${k})</option>`).join('');
+  const none=n(s=>!s.ai);
+  $('aif').innerHTML=`<option value="">🤖 All suggestions</option><optgroup label="Suggested action">${acts}</optgroup><optgroup label="Category">${co}</optgroup>${none?`<option value="none">Not classified yet (${none})</option>`:''}`;
+  if([...$('aif').options].some(o=>o.value===cur))$('aif').value=cur;
+}
+function aiMatch(s){const v=$('aif').value;if(!v)return true;if(v==='none')return !s.ai;if(!s.ai)return false;
+  return v.startsWith('a:')?s.ai.action===v.slice(2):s.ai.category===v.slice(2)}
 function build(){
-  queue=all.filter(s=>!s.note&&s.trashable>0);
-  const k=$('sort').value;
-  queue.sort(k==='n'?(a,b)=>b.n-a.n:k==='old'?(a,b)=>a.last-b.last:(a,b)=>b.size-a.size);
+  aiOptions();
+  queue=all.filter(s=>!s.note&&s.trashable>0&&aiMatch(s));
+  const k=$('sort').value,rank=s=>!s.ai?0:s.ai.action==='trash_all'?2+s.ai.conf:s.ai.action==='trash_old'?1+s.ai.conf:0;
+  queue.sort(k==='n'?(a,b)=>b.n-a.n:k==='old'?(a,b)=>a.last-b.last:k==='ai'?(a,b)=>rank(b)-rank(a)||b.size-a.size:(a,b)=>b.size-a.size);
+  bulkButton();
+}
+$('aif').onchange=()=>{build();render()};
+// senders a bulk accept would act on: confident, actionable, and not money/tax/ID-looking when trashing
+const bulkable=s=>s.ai&&s.ai.conf>=0.85&&['trash_all','trash_old','keep'].includes(s.ai.action)&&!(s.protect&&s.ai.action!=='keep')&&!(s.ai.action==='trash_old'&&!s.old);
+function bulkButton(){
+  const b=$('bulkai'),list=queue.filter(bulkable);
+  b.style.display=$('aif').value&&$('aif').value!=='none'&&list.length?'':'none';
+  b.textContent=`🤖 Accept all ${list.length}`;
+}
+$('bulkai').onclick=async()=>{
+  const list=queue.filter(bulkable),left=queue.length-list.length;
+  const g=a=>list.filter(s=>s.ai.action===a),em=a=>a==='trash_all'?g(a).reduce((x,s)=>x+s.trashable,0):g(a).reduce((x,s)=>x+s.old,0);
+  const sz=a=>a==='trash_all'?g(a).reduce((x,s)=>x+s.size,0):g(a).reduce((x,s)=>x+s.old_size,0);
+  const ok=await ask(`Apply the AI's suggestion to <b>${list.length}</b> senders in this view:<br><br>
+    🗑 Trash all: <b>${g('trash_all').length}</b> senders · ${em('trash_all').toLocaleString()} emails · ${mb(sz('trash_all'))}<br>
+    🕰 Trash old: <b>${g('trash_old').length}</b> senders · ${em('trash_old').toLocaleString()} emails · ${mb(sz('trash_old'))}<br>
+    ✅ Keep: <b>${g('keep').length}</b> senders<br><br>
+    ${left?`${left} other senders stay for you to swipe (unsure, or bank/tax-looking).<br>`:''}Everything goes to Gmail's Trash (30 days). One ↩ Undo reverses the whole batch.`,'Apply all','var(--keep)','🤖 Accept AI suggestions');
+  if(!ok)return;
+  const r=await post('/accept_ai',{senders:list.map(s=>s.sender),cat:$('cat').value});
+  if(!r.ok)return toast('⚠ '+r.error,false);
+  await watchJob();
+};
+async function watchJob(){
+  $('job').style.display='flex';
+  for(;;){
+    const j=await fetch('/job').then(r=>r.json());
+    $('jobt').textContent=j.title||'Working…';$('jobbar').style.width=(j.total?j.done/j.total*100:0)+'%';
+    $('jobm').textContent=`${j.done||0} / ${j.total||0} senders · ${(j.emails||0).toLocaleString()} emails${j.size?' · '+mb(j.size):''}${j.failed?` · ⚠ ${j.failed} failed`:''}`;
+    if(!j.running){$('job').style.display='none';
+      toast(j.error?'⚠ '+j.error:`✅ ${j.title}: ${j.done} senders, ${(j.emails||0).toLocaleString()} emails${j.failed?`, ⚠ ${j.failed} failed (try again)`:''}.${j.title.startsWith('Undoing')?'':' ↩ Undo reverses it.'}`,false);
+      tab='review';return load()}
+    await new Promise(r=>setTimeout(r,800));
+  }
 }
 $('cat').onchange=()=>{localStorage.cat=$('cat').value;load()};
 $('sort').onchange=()=>{localStorage.sort=$('sort').value;build();render()};
 
 function header(){
-  const L={trash_all:'🗑 Trash all',trash_old:'🕰 Trash old',keep:'✅ Keep',skip:'⏭ Skip'};
+  const L={trash_all:'🗑 Trash all',trash_old:'🕰 Trash old',keep:'✅ Keep',skip:'⏭ Skip',bulk:'🤖 Bulk accept of'};
   $('undobtn').disabled=!stats.actions;$('undobtn').title=stats.last?`Undo: ${L[stats.last.kind]} ${stats.last.sender} · key Z`:'Nothing to undo';
   $('sum').innerHTML=`<span>🗑 Trashed <b>${stats.trashed}</b> emails · <b>${mb(stats.trashed_size)}</b> freed</span><span>📬 ${stats.live} left · ${mb(stats.live_size)}</span>`;
   $('idx').style.display=stats.indexing?'block':'none';
@@ -190,13 +257,15 @@ function render(){
   const s=queue[0];
   card.style.transition='none';card.style.transform='';stamps(0,0);
   if(!s){card.style.display='none';$('empty').style.display='flex';
-    $('empty').innerHTML=`<h2>Nothing left here 🎉</h2><p>Every sender in <b>${$('cat').selectedOptions[0].text}</b> is dealt with.</p><p>Try another Gmail tab from the top menu.</p>`;
+    $('empty').innerHTML=`<h2>Nothing left here 🎉</h2><p>Every sender in <b>${$('cat').selectedOptions[0].text}</b>${$('aif').value?' matching the 🤖 filter':''} is dealt with.</p><p>Try another Gmail tab or 🤖 filter from the top menus.</p>`;
     ['bt','bo','bk'].forEach(i=>$(i).disabled=true);return}
   $('empty').style.display='none';card.style.display='block';card.scrollTop=0;
   const cats=Object.entries(s.cats).map(([k,v])=>`<span class="chip">${k} ${v}</span>`).join('');
   card.innerHTML=`
     <div class="who">${esc(s.name||s.sender.split('@')[0])}</div>
     <div class="addr">${esc(s.sender)}</div>
+    ${s.ai?`<div id="aibox" style="border-color:${AICOL[s.ai.action]}">🤖 Suggests <b class="a" style="color:${AICOL[s.ai.action]}">${AIL[s.ai.action]}</b> · ${Math.round(s.ai.conf*100)}% sure
+      <div class="why">${esc(s.ai.reason)}</div><div class="meta">${esc(s.ai.category)} › ${esc(s.ai.sub)}</div></div>`:'<div id="aibox" style="opacity:.6">🤖 Not classified yet</div>'}
     ${s.protect?`<div class="warn">⚠ Looks like <b>money / tax / ID</b> mail (matched “${esc(s.protect)}”). Usually worth keeping, or only trashing old.</div>`:''}
     <div class="grid">
       <div class="st"><b>${s.n.toLocaleString()}</b><span>emails</span></div>
@@ -215,6 +284,8 @@ function render(){
   $('bt-s').textContent=`${s.trashable.toLocaleString()} · ${mb(s.size)}`;
   $('bo-s').textContent=s.old?`${s.old.toLocaleString()} · ${mb(s.old_size)}`:'none that old';
   $('bt').disabled=false;$('bk').disabled=false;$('bo').disabled=!s.old;
+  const sg=s.ai&&s.ai.action;$('bt').classList.toggle('sugg',sg==='trash_all');$('bo').classList.toggle('sugg',sg==='trash_old');$('bk').classList.toggle('sugg',sg==='keep');
+  $('doai').disabled=!sg||sg==='review';$('doai').textContent=sg&&sg!=='review'?`🤖 ${AIL[sg]} (A)`:'🤖 No clear suggestion';
 }
 function renderList(){
   const L=$('list');
@@ -233,7 +304,8 @@ function renderList(){
 function post(u,d){return fetch(u,{method:'POST',body:JSON.stringify(d)}).then(r=>r.json())}
 function stamps(dx,dy){const c=v=>Math.max(0,Math.min(1,v/110)),h=Math.abs(dx)>dy;
   $('s-keep').style.opacity=h?c(dx):0;$('s-trash').style.opacity=h?c(-dx):0;$('s-old').style.opacity=h?0:c(dy)}
-function ask(msg){return new Promise(res=>{$('cmsg').innerHTML=msg;$('confirm').style.display='flex';
+function ask(msg,yes='Trash anyway',col='var(--trash)',title='⚠ This looks important'){return new Promise(res=>{$('cmsg').innerHTML=msg;$('confirm').style.display='flex';
+  $('cyes').textContent=yes;$('cyes').style.background=col;$('confirm').querySelector('h3').textContent=title;
   $('cyes').onclick=()=>{$('confirm').style.display='none';res(true)};$('cno').onclick=()=>{$('confirm').style.display='none';res(false)}})}
 async function decide(kind){
   const s=queue[0];if(busy||!s||tab!=='review')return;
@@ -249,7 +321,7 @@ async function decide(kind){
   stamps(kind==='keep'?200:kind==='trash_all'?-200:0,kind==='trash_old'?200:0);
   const n=kind==='trash_all'?s.trashable:kind==='trash_old'?s.old:0;
   const slow=setTimeout(()=>{$('busymsg').textContent=`Moving ${n.toLocaleString()} emails to Trash…`;$('busy').style.display='flex'},350);
-  let r;try{r=await post('/act',{sender:s.sender,kind})}catch(e){r={ok:false,error:String(e)}}
+  let r;try{r=await post('/act',{sender:s.sender,kind,cat:$('cat').value})}catch(e){r={ok:false,error:String(e)}}
   clearTimeout(slow);$('busy').style.display='none';busy=false;
   if(r.error){toast('⚠ Failed: '+r.error,false);await load();return}
   toast(`${lab}: ${s.name||s.sender}${r.n?` · ${r.n} emails · ${mb(r.size)}`:''}${r.failed?` (⚠ ${r.failed} failed, try again)`:''}`);
@@ -265,12 +337,14 @@ async function undo(){
   if(busy)return;busy=true;$('busymsg').textContent='Undoing…';$('busy').style.display='flex';
   const r=await post('/undo_last',{});$('busy').style.display='none';busy=false;
   if(r.none)return toast('Nothing to undo',false);
+  if(r.job)return watchJob();
   const L={trash_all:'🗑 Trash all',trash_old:'🕰 Trash old',keep:'✅ Keep',skip:'⏭ Skip'};
   toast(r.ok?`↩ Undid ${L[r.kind]}: ${r.sender}${r.n?` · ${r.n} emails back`:''}. It's back in To review.`:`⚠ Undo incomplete (${r.failed} failed). Tap Undo again.`,false);
   tab='review';await load();
 }
 let tt;function toast(m,u=true){$('tmsg').textContent=m;$('toast').style.display='flex';clearTimeout(tt);tt=setTimeout(()=>$('toast').style.display='none',4500)}
 $('undo').onclick=undo;$('undobtn').onclick=undo;$('bt').onclick=()=>decide('trash_all');$('bo').onclick=()=>decide('trash_old');$('bk').onclick=()=>decide('keep');$('skip').onclick=()=>decide('skip');
+const doAI=()=>{const s=queue[0];if(s&&s.ai&&s.ai.action!=='review')decide(s.ai.action)};$('doai').onclick=doAI;
 
 // swipe: horizontal or downward drag; vertical scroll inside the card still works when the card is scrolled
 let sx=null,sy=0,dx=0,dy=0,lock=null;
@@ -288,12 +362,12 @@ card.addEventListener('pointercancel',()=>{sx=null;spring()});
 
 onkeydown=e=>{if($('help').style.display==='block'){if(e.key==='Enter'||e.key==='Escape')closeHelp();return}
   if($('confirm').style.display==='flex'){if(e.key==='Escape')$('cno').click();if(e.key==='Enter')$('cyes').click();return}
-  ({ArrowLeft:()=>decide('trash_all'),ArrowDown:()=>decide('trash_old'),ArrowRight:()=>decide('keep'),s:()=>decide('skip'),z:undo,'?':openHelp})[e.key]?.()};
+  ({ArrowLeft:()=>decide('trash_all'),ArrowDown:()=>decide('trash_old'),ArrowRight:()=>decide('keep'),s:()=>decide('skip'),a:doAI,z:undo,'?':openHelp})[e.key]?.()};
 function openHelp(){$('help').style.display='block'}
-function closeHelp(){$('help').style.display='none';localStorage.seenMailHelp=1}
+function closeHelp(){$('help').style.display='none';localStorage.seenMailHelp2=1}
 $('helpbtn').onclick=openHelp;$('gotit').onclick=closeHelp;
 if(localStorage.cat)$('cat').value=localStorage.cat;if(localStorage.sort)$('sort').value=localStorage.sort;
-if(!localStorage.seenMailHelp)openHelp();
+if(!localStorage.seenMailHelp2)openHelp();
 load();setInterval(()=>{if(stats.indexing&&!busy&&tab==='review')fetch('/stats').then(r=>r.json()).then(s=>{stats=s;header()})},15000);
 </script>
 </body></html>

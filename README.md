@@ -7,6 +7,7 @@ served only on your Tailscale network.
 |---|---|---|
 | **Photo Swipe** (`photo-swipe/`) | 8091 | Sort a local Drive backup: → Google Photos · ↑ Google Drive · ↓ local only · ← delete. Has a whole-folder move, a "5 from this folder" hint, review tabs and a server-side Undo. Its **📱 Send** button pushes the Google Photos picks to your phone over Syncthing, where Google Photos backs them up. |
 | **Mail Swipe** (`mail-swipe/`) | 8092 | One card per sender: ← trash all · ↓ trash > 1 year · → keep · skip. Starred and sent mail are never touched. Bank/tax/ID-looking senders ask first. Every action is logged with exact message ids and can be undone or restored. |
+| `mail-swipe/classify.py` | – | AI sender classifier (default: `gpt-6-luna`, low effort, via the local codex-lb proxy). Gives each sender a category, a subcategory, a suggested action and a reason. Only metadata (names, counts, subject lines) is sent, never bodies. Incremental; re-run after `index.py`. |
 | `tools/drive_backup.py` | – | `report` (quota, biggest files, duplicates) and `backup DEST` (incremental, md5-verified, keeps Drive dates and folder layout). |
 
 ## Setup
@@ -16,7 +17,8 @@ served only on your Tailscale network.
 2. **Config.** `cp config.example.env ~/.config/google-storage-cleanup/config.env`, fill it in, then `chmod 600` it.
 3. **Python.** Photo Swipe needs `pillow` and `qrcode`. Mail Swipe and the tools need `google-api-python-client` and `google-auth`.
 4. **Back up Drive.** `DRIVE_TOKEN=... tools/drive_backup.py backup /mnt/expansion/gdrive-backup`
-5. **Index Gmail.** `cd mail-swipe && GMAIL_TOKEN=... python index.py` (metadata only; about 40 min for 80k emails; re-run any time for new mail).
+5. **Index Gmail, then classify.** `python classify.py` (about 15 min for ~3k senders) adds the 🤖 suggestions, filters and *Accept all*.
+   **Index:** `cd mail-swipe && GMAIL_TOKEN=... python index.py` (metadata only; about 40 min for 80k emails; re-run any time for new mail).
 6. **Install services.** `deploy/install.sh /mnt/expansion/gdrive-backup /path/to/venv/bin/python`
 7. **Phone sync (optional).** `sudo apt install syncthing && sudo systemctl enable --now syncthing@$USER`, then follow
    the 📱 Send panel. Install Syncthing-Fork on the phone, scan the QR code, accept the folder as *Receive only*,

@@ -16,4 +16,9 @@ def db():
     con.execute('create index if not exists msg_sender on msg(sender)')
     con.execute('create table if not exists sender_note(sender text primary key,decision text,at integer)')
     con.execute('create table if not exists action(id integer primary key,at integer,sender text,kind text,ids text)')
+    if 'batch' not in [c[1] for c in con.execute('pragma table_info(action)')]:
+        try:con.execute('alter table action add column batch integer')   # bulk actions share a batch id: one undo step
+        except sqlite3.OperationalError:pass   # another thread added it first
+    con.execute('''create table if not exists sender_ai(sender text primary key,category text,subcategory text,action text,
+        confidence real,reason text,n_at integer,model text,at integer)''')
     return con
