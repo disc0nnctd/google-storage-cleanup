@@ -2,7 +2,7 @@
 """Index Gmail metadata (From/Subject/size/labels/List-Unsubscribe) into index.db. Re-runnable: fetches only new ids."""
 import json,re,time,sys
 from email.utils import parseaddr
-from gmailapi import service,db
+from gmailapi import service,db,mark_attachments
 g=service();con=db()
 have={r[0] for r in con.execute('select id from msg')}
 ids=[];tok=None
@@ -38,4 +38,5 @@ while i<len(todo):
     i+=40
     if (i//40)%50==0:print(i,'/',len(todo),flush=True)
     time.sleep(0.6)
+print('attachments flagged:',mark_attachments(g,con),flush=True)
 print('DONE',con.execute("select count(*) from msg where state='live'").fetchone()[0],'indexed')

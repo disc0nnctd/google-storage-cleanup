@@ -14,6 +14,10 @@ def db():
     con.execute('''create table if not exists msg(id text primary key,thread text,sender text,name text,subject text,
       date integer,size integer,labels text,unsub text,state text default 'live')''')
     con.execute('create index if not exists msg_sender on msg(sender)')
+    if 'has_att' not in [c[1] for c in con.execute('pragma table_info(msg)')]:
+        try:con.execute('alter table msg add column has_att integer default 0')
+        except sqlite3.OperationalError:pass
+    con.execute('create table if not exists settings(key text primary key,val text)')
     con.execute('create table if not exists sender_note(sender text primary key,decision text,at integer)')
     con.execute('create table if not exists action(id integer primary key,at integer,sender text,kind text,ids text)')
     if 'batch' not in [c[1] for c in con.execute('pragma table_info(action)')]:
@@ -42,3 +46,14 @@ MONEY_CATS=('Banking & cards','Investing & trading','Bills & utilities','Insuran
 # type -> days to keep (None = keep forever)
 TYPE_KEEP={'txn_alert':90,'otp_security':7,'marketing':0,'notice':365,'record':None}
 def notekey(sender,cat):return 'money:'+sender if cat=='money' else sender
+
+def mark_attachments(g,con):
+    """Flag every message Gmail says has an attachment (has:attachment), so auto-clean never touches files."""
+    ids=set();tok=None
+    while True:
+        r=g.users().messages().list(userId='me',q='has:attachment',maxResults=500,pageToken=tok,includeSpamTrash=False).execute()
+        ids.update(m['id'] for m in r.get('messages',[]));tok=r.get('nextPageToken')
+        if not tok:break
+    con.execute('update msg set has_att=0')
+    con.executemany('update msg set has_att=1 where id=?',[(i,) for i in ids]);con.commit()
+    return len(ids)

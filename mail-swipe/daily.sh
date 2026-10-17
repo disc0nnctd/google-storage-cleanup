@@ -5,5 +5,6 @@ cd "$(dirname "$0")"
 PY=${PYTHON:-python3}
 $PY index.py
 $PY classify.py
-$PY classify_types.py
-if [ "${AUTOCLEAN_APPLY:-0}" = 1 ]; then $PY autoclean.py --apply; else $PY autoclean.py; fi
+$PY classify_types.py --everyone
+$PY jury.py
+$PY autoclean.py

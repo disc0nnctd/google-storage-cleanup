@@ -106,11 +106,27 @@ kbd{background:#333946;border-radius:4px;padding:1px 6px;font-size:12px;color:#e
 #typebox .r{color:var(--mut);font-size:12px}
 #marked{margin-top:10px;border-radius:10px;padding:8px 11px;font-size:13px;background:#2a1a1a;border:1px solid #6b2c2c;color:#ffc9c9}
 #marked div+div{margin-top:3px}
+#autop{position:fixed;inset:0;background:#08090c;z-index:14;display:none;overflow:auto;padding:16px 14px 30px}
+#autop h2{margin:0;font-size:19px;flex:1}
+#autop .sec{background:var(--card);border-radius:12px;padding:12px;margin-top:12px}
+#autop h3{margin:0 0 6px;font-size:15px}
+#autop table{width:100%;border-collapse:collapse;font-size:13px}
+#autop td{padding:4px 2px;border-top:1px solid #262a33}
+#autop td.n{text-align:right;white-space:nowrap;color:#c9d0db}
+#autop .em{display:flex;gap:8px;align-items:center;padding:7px 0;border-top:1px solid #262a33;font-size:13px}
+#autop .em div{flex:1;min-width:0}
+#autop .em b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#autop .em span{color:var(--mut);font-size:12px}
+#autop .em button{background:#173d2b;color:#7be0a8;border:0;border-radius:8px;padding:7px 9px;font-size:12px;white-space:nowrap}
+#autop .big{width:100%;border:0;border-radius:11px;padding:13px;font-size:15px;font-weight:700;color:#fff;margin-top:8px}
+#autop label{display:flex;gap:9px;align-items:center;font-size:14px;margin-top:10px}
+#autop label input{width:22px;height:22px}
 </style></head>
 <body>
 <header>
   <div class="row">
     <h1>📧 Mail Swipe</h1>
+    <button class="icon" id="autobtn" style="background:#3b2a5a">🧹 Auto</button>
     <button class="icon" id="undobtn" disabled>↩ Undo</button>
     <button class="icon" id="helpbtn" aria-label="Help">?</button>
   </div>
@@ -146,6 +162,18 @@ kbd{background:#333946;border-radius:4px;padding:1px 6px;font-size:12px;color:#e
 <div id="skiprow"><button id="doai" title="Do what the AI suggests (key A)">🤖 Do suggestion (A)</button><button id="bulkai" style="display:none"></button><button id="skip">Skip (S) ›</button></div>
 <div id="job"><div class="box"><b id="jobt">Working…</b><div class="bar"><i id="jobbar"></i></div><div id="jobm" style="font-size:13px;color:#c9d0db"></div></div></div>
 
+<div id="autop">
+  <div class="row"><h2>🧹 AI auto-clean</h2><button class="icon" id="autoclose">✕ Close</button></div>
+  <p style="color:var(--mut);font-size:13px;margin:8px 0 0">The AI decides every email. It keeps orders, receipts, statements, anything with an attachment, mail from people, mail you sent, starred mail and senders you kept. It deletes promotions, newsletters and social pings, plus status alerts after 90 days, OTPs after 7 days and notices after 1 year. Everything goes to Gmail's Trash (30 days), and one ↩ Undo reverses a whole run.</p>
+  <div class="sec" id="autosum">Working it out…</div>
+  <div class="sec"><h3>🔎 Second-opinion check</h3><div id="autoaudit"></div></div>
+  <div class="sec"><h3>🎲 Random sample of deletions</h3><p style="color:var(--mut);font-size:12.5px;margin:0">Tap <b>Keep this kind</b> on anything that shouldn't go. That whole pattern becomes a record and is never auto-deleted.</p><div id="autosample"></div>
+    <button class="icon" id="automore" style="margin-top:8px">🎲 Another 40</button></div>
+  <div class="sec"><h3>Run</h3>
+    <button class="big" id="autorun" style="background:var(--trash)">🧹 Run auto-clean now</button>
+    <label><input type="checkbox" id="autodaily"> Run automatically every day (new mail, 4:30 am)</label>
+    <div id="autolast" style="color:var(--mut);font-size:12.5px;margin-top:6px"></div></div>
+</div>
 <div id="toast"><span id="tmsg"></span><button id="undo" hidden></button></div>
 <div id="busy"><div id="busymsg">Working…</div></div>
 <div class="modal" id="confirm"><div class="box">
@@ -282,6 +310,35 @@ async function pollQueue(){
   }else c.style.display='none';
 }
 let cancelledN=0;
+// ---- auto-clean panel ----
+const tdate=t=>new Date(t*1000).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'});
+const TYN={txn_alert:'status alert',otp_security:'OTP/login',marketing:'promotion',notice:'notice',record:'record'};
+function emRow(m,why){return `<div class="em"><div><b>${esc(m.subject||'(no subject)')}</b><span>${esc(m.sender)} · ${tdate(m.date)} · ${esc(m.category||'')}${m.type?' · '+TYN[m.type]:''}${why?' · ⚠ '+esc(why):''}</span></div><button data-id="${esc(m.id)}">Keep this kind</button></div>`}
+function wireKeep(el){el.querySelectorAll('.em button').forEach(b=>b.onclick=async()=>{b.disabled=true;
+  const r=await post('/auto/keep_pattern',{id:b.dataset.id});b.textContent=r.ok?`✅ kept (${r.emails})`:'⚠';
+  toast(r.ok?`✅ “${r.pattern}” from ${r.sender} is now a record: ${r.emails} emails kept, never auto-deleted.`:'⚠ failed',false);autoSum()})}
+async function autoSum(){
+  const p=await fetch('/auto/plan').then(r=>r.json());
+  const tbl=(rows)=>`<table>${rows.slice(0,14).map(([k,n,sz])=>`<tr><td>${esc(k)}</td><td class="n">${n.toLocaleString()}</td><td class="n">${mb(sz)}</td></tr>`).join('')}</table>`;
+  $('autosum').innerHTML=`<h3>Plan right now</h3><p style="font-size:14px;margin:4px 0">🗑 Trash <b>${p.trash_n.toLocaleString()}</b> emails · <b>${mb(p.trash_size)}</b><br>✅ Keep <b>${p.keep_n.toLocaleString()}</b> emails · ${mb(p.keep_size)}</p>
+    <details><summary style="color:#7fb3ff">What goes</summary>${tbl(p.trash)}</details><details><summary style="color:#7fb3ff">What stays, and why</summary>${tbl(p.keep)}</details>`;
+  const a=p.audit;
+  $('autoaudit').innerHTML=a?`<p style="font-size:13px;margin:0 0 4px">A stricter AI re-checked <b>${a.sampled}</b> random planned deletions (${ago(a.at)}) and flagged <b>${a.flagged.length}</b>. Most are kinds your rules delete on purpose (old card alerts, old login notices); keep any you disagree with.</p>`+a.flagged.map(f=>emRow(f,f.why)).join(''):'<p>No check run yet.</p>';
+  wireKeep($('autoaudit'));
+  $('autodaily').checked=!!p.daily;
+  $('autolast').textContent=p.last?`Last run ${ago(p.last.at)}: ${p.last.n.toLocaleString()} emails, ${mb(p.last.size)}.`:'Never run yet.';
+  $('autorun').textContent=`🧹 Run auto-clean now (${p.trash_n.toLocaleString()} emails · ${mb(p.trash_size)})`;
+}
+async function autoSample(){const s=await fetch('/auto/sample?n=40&side=trash').then(r=>r.json());$('autosample').innerHTML=s.map(m=>emRow(m)).join('');wireKeep($('autosample'))}
+$('autobtn').onclick=()=>{$('autop').style.display='block';autoSum();autoSample()};
+$('autoclose').onclick=()=>{$('autop').style.display='none';load()};
+$('automore').onclick=autoSample;
+$('autodaily').onchange=async()=>{const r=await post('/auto/daily',{on:$('autodaily').checked});toast(r.daily?'🧹 Auto-clean will run every day at 4:30 am.':'Daily auto-clean is off.',false)};
+$('autorun').onclick=async()=>{
+  if(!await ask('Run AI auto-clean now? Everything in the plan goes to Gmail\'s Trash (recoverable for 30 days). One ↩ Undo reverses the whole run.','Run it','var(--trash)','🧹 Auto-clean'))return;
+  const r=await post('/auto/run',{});toast(`🧹 Queued ${r.emails.toLocaleString()} emails from ${r.senders} senders. Runs in the background.`,false);
+  $('autop').style.display='none';pollQueue();load();
+};
 async function watchJob(){
   $('job').style.display='flex';
   for(;;){

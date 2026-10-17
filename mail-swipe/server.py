@@ -17,7 +17,7 @@ DAY=86400
 DELETABLE=('txn_alert','otp_security','marketing','notice')
 _types={'n':-1,'map':{}}
 def types():
-    c=db();n=c.execute('select count(*) from mail_type').fetchone()[0]
+    c=db();n=tuple(c.execute('select count(*),max(at) from mail_type').fetchone())   # changes on new rows AND overrides
     if n!=_types['n']:_types.update(n=n,map={(r['sender'],r['tmpl']):r['type'] for r in c.execute('select sender,tmpl,type from mail_type')})
     return _types['map']
 def mtype(r,T):return T.get((r['sender'],tmpl(r['subject'])))
@@ -139,10 +139,10 @@ def batch_call(ids,method):
         if todo:time.sleep(2*tries)
     return ok,todo
 
-def act(sender,kind,batch=None,cat='all'):
-    try:return _act(sender,kind,batch,cat)
+def act(sender,kind,batch=None,cat='all',ids=None):
+    try:return _act(sender,kind,batch,cat,ids)
     finally:bump()   # after the change, so a read mid-action can't cache stale data
-def _act(sender,kind,batch=None,cat='all'):
+def _act(sender,kind,batch=None,cat='all',only=None):
     with lock:
         con=db()
         nk=notekey(sender,cat)
@@ -153,11 +153,13 @@ def _act(sender,kind,batch=None,cat='all'):
         if kind=='unnote':
             con.execute('delete from sender_note where sender=?',(sender,));con.commit();return dict(ok=True,n=0)
         rows=[r for r in con.execute("select * from msg where sender=? and state='live'",(sender,)) if eligible(r)]
-        if CATS.get(cat):rows=[r for r in rows if CATS[cat] in r['labels'].split(',')]   # only the Gmail tab the card showed
-        if cat=='money':   # alerts/OTP/offers/notices only; records are never touched
+        if only is not None:   # auto-clean: exactly the emails the plan chose (re-checked as still eligible)
+            keepset=set(only);rows=[r for r in rows if r['id'] in keepset and not r['has_att']]
+        elif CATS.get(cat):rows=[r for r in rows if CATS[cat] in r['labels'].split(',')]   # only the Gmail tab the card showed
+        if only is None and cat=='money':   # alerts/OTP/offers/notices only; records are never touched
             T=types();rows=[(r,mtype(r,T)) for r in rows];rows=[(r,t) for r,t in rows if t in DELETABLE]
             rows=[r for r,t in rows if kind!='trash_old' or past_keep(r,t)]
-        elif kind=='trash_old':rows=[r for r in rows if r['date']<time.time()-YEAR]
+        elif only is None and kind=='trash_old':rows=[r for r in rows if r['date']<time.time()-YEAR]
         ids=[r['id'] for r in rows]
         if not ids:return dict(ok=True,n=0,size=0,id=None)
         ok,bad=batch_call(ids,'trash')
@@ -252,9 +254,9 @@ Q=collections.deque();QLOCK=threading.Lock();QEV=threading.Event()
 QSTAT=dict(current=None,done=0,emails=0,size=0,failed=0,last_error=None)
 NOTE={'keep':'keep','skip':'skip','trash_all':'trashed','trash_old':'trimmed'}
 _qid=[0]
-def enqueue(sender,kind,cat='all',batch=None):
+def enqueue(sender,kind,cat='all',batch=None,ids=None):
     with QLOCK:
-        _qid[0]+=1;it=dict(id=_qid[0],sender=sender,kind=kind,cat=cat,batch=batch)
+        _qid[0]+=1;it=dict(id=_qid[0],sender=sender,kind=kind,cat=cat,batch=batch,ids=ids)
         Q.append(it)
     if kind in NOTE:
         c=db();c.execute('insert or replace into sender_note values(?,?,?)',(notekey(sender,cat),NOTE[kind],int(time.time())));c.commit()  # hide the card now
@@ -270,7 +272,7 @@ def worker():
             if it['kind']=='unsub':
                 u=unsubscribe(it['sender'])
                 QSTAT['unsubbed']=QSTAT.get('unsubbed',0)+(1 if u.get('ok') else 0);continue
-            r=act(it['sender'],it['kind'],it['batch'],it['cat'])
+            r=act(it['sender'],it['kind'],it['batch'],it['cat'],it.get('ids'))
             QSTAT['emails']+=r.get('n',0);QSTAT['size']+=r.get('size',0) or 0
             if r.get('failed'):QSTAT['failed']+=r['failed'];QSTAT['last_error']=f"{r['failed']} emails from {it['sender']} failed"
             if it['kind'].startswith('trash') and not r.get('n') and r.get('failed'):
@@ -299,6 +301,73 @@ def queue_status():
     cur=QSTAT['current']
     return dict(pending=len(pend),trash_pending=len(trash),unsub_pending=sum(1 for i in pend if i['kind']=='unsub'),unsubbed=QSTAT.get('unsubbed',0),current=cur['sender'] if cur else None,
                 emails=QSTAT['emails'],size=QSTAT['size'],failed=QSTAT['failed'],last_error=QSTAT['last_error'])
+
+# ---- AI auto-clean: per-email decision, important stuff kept, the rest trashed ----
+PROTECT_CATS=('People','Tax & government','Health','Insurance','Jobs & career','Education')
+def auto_plan(detail=False,jury_gate=True):
+    """Decide every live email. Returns counts per reason, plus ids grouped by sender when detail=True."""
+    con=db();T=types()
+    ai={r['sender']:r for r in con.execute('select * from sender_ai')}
+    notes={r['sender']:r['decision'] for r in con.execute('select * from sender_note')}
+    keep=collections.Counter();trash=collections.Counter();ksz=collections.Counter();tsz=collections.Counter()
+    plan={};now=time.time();mine=me()
+    jury={(r[0],r[1]):json.loads(r[2]) for r in con.execute('select sender,tmpl,votes from pattern_votes')} if con.execute("select count(*) from sqlite_master where name='pattern_votes'").fetchone()[0] else {}
+    use_jury=bool(jury) and jury_gate
+    for r in con.execute("select id,sender,subject,date,size,labels,has_att from msg where state='live'"):
+        labs=r['labels'].split(',');a=ai.get(r['sender']);t=mtype(r,T)
+        def K(why):keep[why]+=1;ksz[why]+=r['size']
+        if 'STARRED' in labs:K('starred');continue
+        if 'SENT' in labs or r['sender']==mine:K('sent by you');continue
+        if r['has_att']:K('has attachment');continue
+        if notes.get(r['sender'])=='keep' or notes.get('money:'+r['sender'])=='keep':K('you chose Keep');continue
+        if not a:K('not classified');continue
+        TL={'txn_alert':'old status alerts','otp_security':'old OTP / login alerts','marketing':'promotions','notice':'old notices'}
+        cat=a['category']
+        if t=='record':K('order / receipt / statement');continue
+        if cat in PROTECT_CATS:   # people, tax, health, insurance, jobs, education: only plain promotions may go
+            if t=='marketing':why=f'{cat}: promotions'
+            else:K(cat.lower());continue
+        elif t:
+            if a['action'] in('review',) or a['confidence']<0.85:   # sender unclear: only promotions
+                if t=='marketing':why=f'{cat}: promotions'
+                else:K('AI unsure about sender');continue
+            elif past_keep(r,t):why=f'{cat}: {TL[t]}'
+            else:K('still within keep time');continue
+        elif a['confidence']<0.85:K('AI unsure');continue
+        elif a['action']=='trash_all':why=f'{cat}: (no pattern type)'
+        elif a['action']=='trash_old' and r['date']<now-YEAR:why=f'{cat}: older than 1 year'
+        else:K('AI says keep' if a['action']=='keep' else 'recent / review');continue
+        if use_jury:
+            v=jury.get((r['sender'],tmpl(r['subject'])))
+            if v is None:K('jury: not voted yet');continue
+            if v.count('delete')<len(v):K(f"jury: {v.count('keep')} of {len(v)} said keep");continue
+        trash[why]+=1;tsz[why]+=r['size']
+        if detail:plan.setdefault(r['sender'],[]).append(r['id'])
+    out=dict(trash=sorted(([k,v,tsz[k]] for k,v in trash.items()),key=lambda x:-x[2]),keep=sorted(([k,v,ksz[k]] for k,v in keep.items()),key=lambda x:-x[2]),
+             trash_n=sum(trash.values()),trash_size=sum(tsz.values()),keep_n=sum(keep.values()),keep_size=sum(ksz.values()))
+    if detail:out['plan']=plan
+    return out
+def auto_sample(n=40,side='trash',jury_gate=True):
+    """Random emails from one side of the plan, for checking."""
+    import random
+    p=auto_plan(detail=True,jury_gate=jury_gate)
+    if side=='trash':ids=[i for v in p['plan'].values() for i in v]
+    else:
+        tr={i for v in p['plan'].values() for i in v}
+        ids=[r[0] for r in db().execute("select id from msg where state='live'") if r[0] not in tr]
+    pick=random.sample(ids,min(n,len(ids)))
+    c=db();q=f"select m.id,m.sender,m.name,m.subject,m.date,m.size,m.has_att,a.category,a.action from msg m left join sender_ai a on a.sender=m.sender where m.id in ({','.join('?'*len(pick))})"
+    T=types();out=[]
+    for r in c.execute(q,pick):
+        d=dict(r);d['type']=T.get((r['sender'],tmpl(r['subject'])));out.append(d)
+    return out
+def auto_run():
+    p=auto_plan(detail=True);b=int(time.time()*1000)
+    for snd,ids in p['plan'].items():enqueue(snd,'trash_ids','auto',b,ids)
+    c=db();c.execute("insert or replace into settings values('auto_last',?)",(json.dumps(dict(at=int(time.time()),n=p['trash_n'],size=p['trash_size'])),));c.commit()
+    return dict(ok=True,senders=len(p['plan']),emails=p['trash_n'],size=p['trash_size'],batch=b)
+def setting(k,default=None):
+    r=db().execute('select val from settings where key=?',(k,)).fetchone();return json.loads(r[0]) if r else default
 
 JOB={'running':False}
 def start_job(title,work):
@@ -389,6 +458,8 @@ class H(BaseHTTPRequestHandler):
         if u.path=='/senders':return s.send(200,senders(q.get('cat',['promotions'])[0]))
         if u.path=='/history':return s.send(200,history())
         if u.path=='/stats':return s.send(200,stats())
+        if u.path=='/auto/plan':return s.send(200,dict(auto_plan(),daily=setting('auto_daily',False),last=setting('auto_last'),audit=setting('auto_audit')))
+        if u.path=='/auto/sample':return s.send(200,auto_sample(int(q.get('n',['40'])[0]),q.get('side',['trash'])[0],q.get('jury',['1'])[0]!='0'))
         if u.path=='/unsub_log':
             rows=[dict(r) for r in db().execute('select * from unsub_log order by id desc limit 300')]
             return s.send(200,rows)
@@ -408,6 +479,16 @@ class H(BaseHTTPRequestHandler):
                 b=int(time.time()*1000)
                 for snd in d['senders']:enqueue(snd,'trash_old','money',b)
                 return s.send(200,dict(ok=True,queued=len(d['senders']),batch=b))
+            if s.path=='/auto/run':return s.send(200,auto_run())
+            if s.path=='/auto/keep_pattern':   # user override: this subject pattern is a record, never auto-deleted
+                c=db();m=c.execute('select sender,subject from msg where id=?',(d['id'],)).fetchone()
+                if not m:return s.send(404,dict(ok=False))
+                c.execute("insert or replace into mail_type values(?,?,'record','user',?)",(m['sender'],tmpl(m['subject']),int(time.time())));c.commit()
+                n=sum(1 for r in c.execute("select subject from msg where sender=? and state='live'",(m['sender'],)) if tmpl(r['subject'])==tmpl(m['subject']))
+                return s.send(200,dict(ok=True,pattern=tmpl(m['subject']),sender=m['sender'],emails=n))
+            if s.path=='/auto/daily':
+                c=db();c.execute("insert or replace into settings values('auto_daily',?)",(json.dumps(bool(d.get('on'))),));c.commit()
+                return s.send(200,dict(ok=True,daily=bool(d.get('on'))))
             if s.path=='/unsubscribe':return s.send(200,unsubscribe(d['sender']))
         except Exception as e:
             return s.send(500,dict(ok=False,error=str(e)[:300]))
