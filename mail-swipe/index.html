@@ -172,6 +172,7 @@ kbd{background:#333946;border-radius:4px;padding:1px 6px;font-size:12px;color:#e
   <div class="sec"><h3>🎲 Random sample of deletions</h3><p style="color:var(--mut);font-size:12.5px;margin:0">Tap <b>Keep this kind</b> on anything that shouldn't go. That whole pattern becomes a record and is never auto-deleted.</p><div id="autosample"></div>
     <button class="icon" id="automore" style="margin-top:8px">🎲 Another 40</button></div>
   <div class="sec"><h3>Run</h3>
+    <div id="autocheck"></div>
     <button class="big" id="autorun" style="background:var(--trash)">🧹 Run auto-clean now</button>
     <label><input type="checkbox" id="autodaily"> Run automatically every day (new mail, 4:30 am)</label>
     <div id="autolast" style="color:var(--mut);font-size:12.5px;margin-top:6px"></div></div>
@@ -345,17 +346,32 @@ async function autoSum(){
   wireKeep($('autoaudit'));
   $('autodaily').checked=!!p.daily;
   $('autolast').textContent=p.last?`Last run ${ago(p.last.at)}: ${p.last.n.toLocaleString()} emails, ${mb(p.last.size)}.`:'Never run yet.';
-  $('autorun').textContent=`🧹 Run auto-clean now (${p.trash_n.toLocaleString()} emails · ${mb(p.trash_size)})`;
+  $('autorun').textContent=checked?`🧹 Checked, run it (${p.trash_n.toLocaleString()} emails · ${mb(p.trash_size)})`:`🔍 Final check before running (${p.trash_n.toLocaleString()} emails · ${mb(p.trash_size)})`;
 }
 async function autoSample(){const s=await fetch('/auto/sample?n=40&side=trash').then(r=>r.json());$('autosample').innerHTML=s.map(m=>emRow(m)).join('');wireKeep($('autosample'))}
-$('autobtn').onclick=()=>{$('autop').style.display='block';autoSum();autoSample()};
+$('autobtn').onclick=()=>{checked=false;$('autocheck').innerHTML='';$('autop').style.display='block';autoSum();autoSample()};
 $('autoclose').onclick=()=>{$('autop').style.display='none';load()};
 $('automore').onclick=autoSample;
 $('autodaily').onchange=async()=>{const r=await post('/auto/daily',{on:$('autodaily').checked});toast(r.daily?'🧹 Auto-clean will run every day at 4:30 am.':'Daily auto-clean is off.',false)};
+let checked=false;
+const CHK={words:['📄 Looks important','Subject mentions an invoice, receipt, booking, statement, tax, policy, salary, ID…'],
+  recent:['🕒 Very recent','Arrived in the last 3 days. You may not have read it yet.'],
+  cats:['🛡 Sensitive sender','Sender is filed as people, tax, health, insurance, jobs or education.']};
+async function finalCheck(){
+  const b=$('autorun');b.disabled=true;b.textContent='🔍 Checking every planned deletion…';
+  const c=await fetch('/auto/precheck').then(r=>r.json());b.disabled=false;
+  const warn=Object.values(c.groups).reduce((a,g)=>a+g.n,0);
+  $('autocheck').innerHTML=`<div class="sec" style="border:1px solid ${warn?'#b8860b':'#2e7d32'}"><h3>${warn?`⚠ Final check: ${warn.toLocaleString()} of ${c.trash_n.toLocaleString()} deletions need a look`:'✅ Final check: nothing looks important'}</h3>
+    ${Object.entries(c.groups).filter(([k,g])=>g.n).map(([k,g])=>`<details ${k==='words'?'open':''}><summary><b>${CHK[k][0]}</b>: ${g.n.toLocaleString()} emails, ${g.patterns} kinds</summary>
+      <p style="color:var(--mut);font-size:12.5px;margin:4px 0">${CHK[k][1]} Tap <b>Keep this kind</b> to save them.${g.patterns>40?' Showing the newest 40 kinds.':''}</p>${g.examples.map(m=>emRow(m)).join('')}</details>`).join('')}
+    <p style="font-size:12.5px;color:var(--mut)">Biggest senders in this run: ${c.top.map(([s,n])=>`${esc(s)} (${n})`).join(', ')}</p></div>`;
+  wireKeep($('autocheck'));checked=true;b.textContent=`🧹 Checked, run it (${c.trash_n.toLocaleString()} emails · ${mb(c.trash_size)})`;autoSum();
+}
 $('autorun').onclick=async()=>{
+  if(!checked)return finalCheck();
   if(!await ask('Run AI auto-clean now? Everything in the plan goes to Gmail\'s Trash (recoverable for 30 days). One ↩ Undo reverses the whole run.','Run it','var(--trash)','🧹 Auto-clean'))return;
   const r=await post('/auto/run',{});toast(`🧹 Queued ${r.emails.toLocaleString()} emails from ${r.senders} senders. Runs in the background.`,false);
-  $('autop').style.display='none';pollQueue();load();
+  checked=false;$('autocheck').innerHTML='';$('autop').style.display='none';pollQueue();load();
 };
 async function watchJob(){
   $('job').style.display='flex';

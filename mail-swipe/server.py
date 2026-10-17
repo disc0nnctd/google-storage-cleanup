@@ -370,6 +370,33 @@ def auto_sample(n=40,side='trash',jury_gate=True):
     for r in c.execute(q,pick):
         d=dict(r);d['type']=T.get((r['sender'],tmpl(r['subject'])));out.append(d)
     return out
+IMPORTANT_RE=re.compile(r'invoice|receipt|order (?:confirm|placed|#)|refund|booking|ticket|itinerary|e-?ticket|statement|\btax\b|form ?16|26as|\btds\b|polic(?:y|ies)|premium|salary|payslip|offer letter|interview|warranty|contract note|\bkyc\b|aadhaar|\bpan\b|passport|visa|lease|rent agreement|admission|result|certificate|account (?:closed|locked)',re.I)
+def auto_precheck():
+    """Final check before a run: deletions that look important, are very recent, or come from protected kinds of senders."""
+    p=auto_plan(detail=True);ids=[i for v in p['plan'].values() for i in v]
+    c=db();T=types();rows=[]
+    for i in range(0,len(ids),900):
+        ch=ids[i:i+900]
+        rows+=c.execute(f"select m.id,m.sender,m.name,m.subject,m.date,m.size,m.has_att,m.labels,a.category,a.action from msg m left join sender_ai a on a.sender=m.sender where m.id in ({','.join('?'*len(ch))})",ch).fetchall()
+    now=time.time()
+    groups=dict(words=[],recent=[],cats=[])
+    for r in rows:
+        d=dict(r);d['type']=T.get((r['sender'],tmpl(r['subject'])));d.pop('labels')
+        if d['type']=='marketing' or 'CATEGORY_PROMOTIONS' in r['labels'] or 'CATEGORY_SOCIAL' in r['labels']:
+            continue   # ads and social pings never need a second look
+        if IMPORTANT_RE.search(r['subject'] or ''):groups['words'].append(d)
+        elif now-r['date']<3*86400:groups['recent'].append(d)
+        elif r['category'] in PROTECT_CATS:groups['cats'].append(d)
+    out={}
+    for k,v in groups.items():   # one example per (sender, pattern) so the list shows variety
+        seen=set();ex=[]
+        for d in sorted(v,key=lambda d:-d['date']):
+            key=(d['sender'],tmpl(d['subject']))
+            if key in seen:continue
+            seen.add(key);ex.append(d)
+        out[k]=dict(n=len(v),patterns=len(ex),examples=ex[:40])
+    top=collections.Counter(r['sender'] for r in rows).most_common(10)
+    return dict(trash_n=p['trash_n'],trash_size=p['trash_size'],senders=len(p['plan']),groups=out,top=top)
 def auto_run():
     p=auto_plan(detail=True);b=int(time.time()*1000)
     for snd,ids in p['plan'].items():enqueue(snd,'trash_ids','auto',b,ids)
@@ -468,6 +495,7 @@ class H(BaseHTTPRequestHandler):
         if u.path=='/history':return s.send(200,history())
         if u.path=='/stats':return s.send(200,stats())
         if u.path=='/auto/plan':return s.send(200,dict(auto_plan(),daily=setting('auto_daily',False),last=setting('auto_last'),audit=setting('auto_audit')))
+        if u.path=='/auto/precheck':return s.send(200,auto_precheck())
         if u.path=='/auto/sample':return s.send(200,auto_sample(int(q.get('n',['40'])[0]),q.get('side',['trash'])[0],q.get('jury',['1'])[0]!='0'))
         if u.path=='/spending':return s.send(200,open(os.path.join(HERE,'spending.html'),'rb').read(),'text/html; charset=utf-8')
         if u.path=='/ledger/rules':
