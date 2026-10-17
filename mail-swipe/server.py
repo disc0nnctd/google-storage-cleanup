@@ -470,8 +470,10 @@ class H(BaseHTTPRequestHandler):
         if u.path=='/auto/plan':return s.send(200,dict(auto_plan(),daily=setting('auto_daily',False),last=setting('auto_last'),audit=setting('auto_audit')))
         if u.path=='/auto/sample':return s.send(200,auto_sample(int(q.get('n',['40'])[0]),q.get('side',['trash'])[0],q.get('jury',['1'])[0]!='0'))
         if u.path=='/spending':return s.send(200,open(os.path.join(HERE,'spending.html'),'rb').read(),'text/html; charset=utf-8')
+        if u.path=='/ledger/rules':
+            import ledger as L;return s.send(200,L.rules(db()))
         if u.path=='/ledger':
-            rows=[dict(r) for r in db().execute("select id,date,amount,direction,merchant,instrument,source,sender,subject from ledger where parsed=1 order by date desc")]
+            rows=[dict(r) for r in db().execute("select id,date,amount,direction,merchant,instrument,source,sender,subject,currency,category from ledger where parsed=1 order by date desc")]
             return s.send(200,rows)
         if u.path=='/auto/overrides':
             c=db();out=[]
@@ -523,6 +525,16 @@ class H(BaseHTTPRequestHandler):
             if s.path=='/auto/daily':
                 c=db();c.execute("insert or replace into settings values('auto_daily',?)",(json.dumps(bool(d.get('on'))),));c.commit()
                 return s.send(200,dict(ok=True,daily=bool(d.get('on'))))
+            if s.path in('/ledger/rule_add','/ledger/rule_del'):
+                import ledger as L;c=db();L.rules(c)
+                if s.path=='/ledger/rule_add':
+                    if not (d.get('match') or '').strip():return s.send(400,dict(ok=False,error='empty match'))
+                    c.execute('insert into ledger_rule(match,field,set_direction,set_category,rename,created) values(?,?,?,?,?,?)',
+                        (d['match'].strip(),d.get('field') or 'any',d.get('set_direction') or None,d.get('set_category') or None,d.get('rename') or None,int(time.time())))
+                else:c.execute('delete from ledger_rule where id=?',(int(d['id']),))
+                c.commit();n,ok=L.reparse()   # re-derive the whole ledger with the new rule set (a few seconds)
+                hit=c.execute("select count(*) from ledger where parsed=1 and (lower(merchant||' '||subject||' '||snippet||' '||sender) like ?)",('%'+(d.get('match') or '').lower()+'%',)).fetchone()[0] if s.path=='/ledger/rule_add' else 0
+                return s.send(200,dict(ok=True,matched=hit))
             if s.path=='/unsubscribe':return s.send(200,unsubscribe(d['sender']))
         except Exception as e:
             return s.send(500,dict(ok=False,error=str(e)[:300]))

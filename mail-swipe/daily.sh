@@ -7,5 +7,6 @@ $PY index.py
 $PY classify.py
 $PY classify_types.py --everyone
 $PY ledger.py
+$PY ledger_ai.py || true   # local model; skipped if not running
 $PY jury.py
 $PY autoclean.py

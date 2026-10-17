@@ -110,20 +110,62 @@ def main():
             i+=50
             if (i//50)%40==0:print(f'{min(i,len(todo))}/{len(todo)}',flush=True)
             time.sleep(0.5)
+    n,ok=reparse()
+    print(f'DONE: {n} in ledger, {ok} with an amount')
+
+# built-in spending categories: first match wins; your own rules (ledger_rule) override these
+CATEGORY=[
+ ('Food delivery',r'swiggy(?!.*instamart)|zomato|bundl|eatsure|uber eats|domino|faasos|box8|dunzo daily'),
+ ('Groceries',r'instamart|blinkit|zepto|bigbasket|grofers|amazon pay in grocery|jiomart|dmart|milkbasket'),
+ ('Transport',r'\buber\b|\bola\b|rapido|metro|irctc|redbus|fastag|petrol|fuel|hpcl|bpcl|indian oil|porter|namma yatri'),
+ ('Travel',r'makemytrip|goibibo|indigo|air india|vistara|akasa|booking\.com|agoda|airbnb|oyo|cleartrip|yatra'),
+ ('Subscriptions',r'claude|anthropic|openai|chatgpt|netflix|spotify|youtube|google play|apple\.com|icloud|prime video|hotstar|jiocinema|github|notion|kindle'),
+ ('Bills & recharge',r'airtel|\bjio\b|vodafone|\bvi\b|bses|electricity|cspdcl|tata power|broadband|recharge|gas bill|water bill|act fibernet'),
+ ('Insurance',r'insurance|bajaj ?allianz|lic\b|hdfc life|star health|policybazaar|acko|digit'),
+ ('Shopping',r'amazon|flipkart|myntra|ajio|nykaa|meesho|shopify|tata cliq|croma|reliance digital|decathlon|ikea|snitch|razorpay'),
+ ('Entertainment',r'bookmyshow|book my show|pvr|inox|steam|playstation|xbox|epic games|district'),
+ ('Health',r'pharm|apollo|practo|1mg|netmeds|hospital|clinic|diagnostic|medplus'),
+]
+def category_for(text):
+    for name,pat in CATEGORY:
+        if re.search(pat,text,re.I):return name
+    return ''
+
+def rules(c):
+    c.execute('''create table if not exists ledger_rule(id integer primary key,match text,field text,set_direction text,
+        set_category text,rename text,created integer)''')
+    return [dict(r) for r in c.execute('select * from ledger_rule order by id')]
+
+def reparse():
+    """Re-derive every ledger row from its stored preview: parser, then categories, then your rules (in order)."""
     c=db();n=ok=0
     cols=[x[1] for x in c.execute('pragma table_info(ledger)')]
-    if 'source' not in cols:c.execute('alter table ledger add column source text')
-    if 'currency' not in cols:c.execute('alter table ledger add column currency text')
+    for col in('source','currency','category'):
+        if col not in cols:c.execute(f'alter table ledger add column {col} text')
     cat={r[0]:r[1] for r in c.execute('select sender,category from sender_ai')}
+    R=rules(c)
+    c.execute('create table if not exists merchant_category(merchant text primary key,category text,source text,at integer)')
+    MC={r[0]:r[1] for r in c.execute('select merchant,category from merchant_category')}   # local-AI answers
     for r in c.execute('select id,snippet,subject,type,sender from ledger').fetchall():
         p=parse(r['snippet'],r['subject'],r['type']);n+=1
         src='bank' if cat.get(r['sender']) in BANKCATS else 'merchant'   # bank alert vs shop receipt for the same spend
         if p and not p['merchant'] and src=='merchant':   # last resort: the shop's own name from its email domain
             dom=r['sender'].split('@')[-1].split('.');core=[x for x in dom if x not in('com','in','co','net','org','mail','email','e','m','info','noreply','mailer','updates')]
             p['merchant']=(core[-1] if core else '').capitalize()
-        if p:ok+=1;c.execute('update ledger set amount=?,direction=?,merchant=?,instrument=?,source=?,currency=?,parsed=1 where id=?',(p['amount'],p['direction'],p['merchant'],p['instrument'],src,p['currency'],r['id']))
-        else:c.execute('update ledger set parsed=0 where id=?',(r['id'],))
+        if not p:c.execute('update ledger set parsed=0 where id=?',(r['id'],));continue
+        ok+=1
+        p['category']=category_for(' '.join([p['merchant'],r['subject'] or '',r['sender']])) or MC.get(p['merchant'].upper().strip(),'')
+        if not p['category'] and re.search(r'to VPA|UPI_|money sent|paid .* to',html.unescape(r['snippet'] or ''),re.I) and p['merchant'] and ' ' in p['merchant'] and p['merchant'].isupper():
+            p['category']='People (UPI)'
+        hay={'any':' '.join([p['merchant'],r['subject'] or '',html.unescape(r['snippet'] or ''),r['sender']]).lower(),'merchant':p['merchant'].lower()}
+        for u in R:
+            if u['match'] and u['match'].lower() in hay.get(u['field'] or 'any',hay['any']):
+                if u['set_direction']:p['direction']=u['set_direction']
+                if u['set_category']:p['category']=u['set_category']
+                if u['rename']:p['merchant']=u['rename']
+        c.execute('update ledger set amount=?,direction=?,merchant=?,instrument=?,source=?,currency=?,category=?,parsed=1 where id=?',
+                  (p['amount'],p['direction'],p['merchant'],p['instrument'],src,p['currency'],p['category'] or 'Other',r['id']))
     c.commit()
-    print(f'DONE: {n} in ledger, {ok} with an amount')
+    return n,ok
 
 if __name__=='__main__':main()
