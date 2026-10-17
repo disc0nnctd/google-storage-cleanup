@@ -86,7 +86,8 @@ def _senders(cat):
 
 def batch_call(ids,method):
     """messages.trash / untrash in HTTP batches of 50, retrying rate-limited ones. Returns ids that succeeded."""
-    if os.environ.get('MAILSWIPE_DRYRUN'):return list(ids),[]
+    if os.environ.get('MAILSWIPE_DRYRUN'):
+        time.sleep(float(os.environ.get('MAILSWIPE_DRYRUN_DELAY',0)));return list(ids),[]
     ok=[];todo=list(ids);tries=0
     while todo and tries<6:
         failed=[]
@@ -146,6 +147,48 @@ def _undo(action_id):
         con.commit()
         return dict(ok=not bad,n=len(ok),failed=len(bad))
 
+# ---- background queue: every action goes through one FIFO worker, so the UI never waits on Gmail ----
+import collections
+Q=collections.deque();QLOCK=threading.Lock();QEV=threading.Event()
+QSTAT=dict(current=None,done=0,emails=0,size=0,failed=0,last_error=None)
+NOTE={'keep':'keep','skip':'skip','trash_all':'trashed','trash_old':'trimmed'}
+_qid=[0]
+def enqueue(sender,kind,cat='all',batch=None):
+    with QLOCK:
+        _qid[0]+=1;it=dict(id=_qid[0],sender=sender,kind=kind,cat=cat,batch=batch)
+        Q.append(it)
+    c=db();c.execute('insert or replace into sender_note values(?,?,?)',(sender,NOTE[kind],int(time.time())));c.commit()  # hide the card now
+    bump();QEV.set();return it
+def worker():
+    while True:
+        QEV.wait()
+        with QLOCK:
+            it=Q[0] if Q else None
+            if it:QSTAT['current']=it
+            else:QEV.clear();QSTAT['current']=None;continue
+        try:
+            r=act(it['sender'],it['kind'],it['batch'],it['cat'])
+            QSTAT['emails']+=r.get('n',0);QSTAT['size']+=r.get('size',0) or 0
+            if r.get('failed'):QSTAT['failed']+=r['failed'];QSTAT['last_error']=f"{r['failed']} emails from {it['sender']} failed"
+            if it['kind'].startswith('trash') and not r.get('n') and r.get('failed'):
+                c=db();c.execute('delete from sender_note where sender=?',(it['sender'],));c.commit()   # nothing moved: bring card back
+        except Exception as e:
+            QSTAT['failed']+=1;QSTAT['last_error']=f"{it['sender']}: {str(e)[:150]}"
+            c=db();c.execute('delete from sender_note where sender=?',(it['sender'],));c.commit()
+        finally:
+            with QLOCK:
+                if Q and Q[0] is it:Q.popleft()
+                QSTAT['done']+=1;QSTAT['current']=None
+            bump()
+threading.Thread(target=worker,daemon=True).start()
+def queue_status():
+    with QLOCK:
+        pend=list(Q)
+    trash=[i for i in pend if i['kind'].startswith('trash')]
+    cur=QSTAT['current']
+    return dict(pending=len(pend),trash_pending=len(trash),current=cur['sender'] if cur else None,
+                emails=QSTAT['emails'],size=QSTAT['size'],failed=QSTAT['failed'],last_error=QSTAT['last_error'])
+
 JOB={'running':False}
 def start_job(title,work):
     if JOB.get('running'):return dict(ok=False,error='Another bulk job is still running')
@@ -158,17 +201,30 @@ def start_job(title,work):
     return dict(ok=True)
 
 def accept_ai(senders_list,cat='all'):
-    batch=int(time.time()*1000)
-    def work(j):
-        j['total']=len(senders_list);j['batch']=batch
-        for snd in senders_list:
-            a=db().execute('select action from sender_ai where sender=?',(snd,)).fetchone()
-            if not a or a['action'] not in('trash_all','trash_old','keep'):j['done']+=1;continue
-            r=act(snd,a['action'],batch,cat)
-            j['done']+=1;j['emails']+=r.get('n',0);j['size']+=r.get('size',0) or 0;j['failed']+=r.get('failed',0) or 0
-    return start_job('Applying AI suggestions',work)
+    batch=int(time.time()*1000);n=0
+    for snd in senders_list:
+        a=db().execute('select action from sender_ai where sender=?',(snd,)).fetchone()
+        if a and a['action'] in('trash_all','trash_old','keep'):enqueue(snd,a['action'],cat,batch);n+=1
+    return dict(ok=True,queued=n,batch=batch)
 
 def undo_last_job():
+    with QLOCK:
+        pend=[i for i in Q if i is not QSTAT['current']]
+        if pend:
+            last=pend[-1]
+            drop=[i for i in pend if last['batch'] and i['batch']==last['batch']] or [last]
+            for i in drop:Q.remove(i)
+        else:drop=[]
+    if drop:
+        b=drop[0]['batch']
+        while b and QSTAT['current'] and QSTAT['current'].get('batch')==b:time.sleep(0.2)   # in-flight item of this batch: let it land, then undo it too
+        c=db();c.executemany('delete from sender_note where sender=?',[(i['sender'],) for i in drop]);c.commit();bump()
+        done_in_batch=c.execute('select count(*) from action where batch=?',(drop[0]['batch'],)).fetchone()[0] if drop[0]['batch'] else 0
+        r=dict(ok=True,cancelled=len(drop),sender=drop[0]['sender'] if len(drop)==1 else f'{len(drop)} senders',kind=drop[0]['kind'])
+        if done_in_batch:   # part of the batch already ran: undo those too
+            r.update(undo_last_job());r['cancelled']=len(drop)
+        return r
+    while QSTAT['current']:time.sleep(0.2)   # let the running item finish, then undo it normally
     con=db();a=con.execute('select id,sender,kind,batch from action order by id desc limit 1').fetchone()
     if not a:return dict(ok=False,none=True)
     if not a['batch']:
@@ -196,6 +252,11 @@ def stats():
     tr=con.execute("select count(*),coalesce(sum(size),0) from msg where state='trashed'").fetchone()
     log=open(LOG).read().split('\n') if os.path.exists(LOG) else []
     indexing=not any(l.startswith('DONE') for l in log)
+    with QLOCK:pend=list(Q)
+    if pend:
+        l=pend[-1];n=sum(1 for i in pend if l['batch'] and i['batch']==l['batch']) or 1
+        return dict(live=live[0],live_size=live[1],trashed=tr[0],trashed_size=tr[1],indexing=indexing,total=profile().get('messagesTotal',0),
+                    actions=1,last=dict(sender=l['sender'] if n==1 else f'{n} senders',kind=l['kind'] if n==1 else 'bulk',queued=True))
     last=con.execute('select sender,kind,batch from action order by id desc limit 1').fetchone()
     if last and last['batch']:
         n=con.execute('select count(*) from action where batch=?',(last['batch'],)).fetchone()[0]
@@ -215,12 +276,15 @@ class H(BaseHTTPRequestHandler):
         if u.path=='/senders':return s.send(200,senders(q.get('cat',['promotions'])[0]))
         if u.path=='/history':return s.send(200,history())
         if u.path=='/stats':return s.send(200,stats())
+        if u.path=='/queue':return s.send(200,queue_status())
         if u.path=='/job':return s.send(200,{k:v for k,v in JOB.items()})
         s.send(404,{})
     def do_POST(s):
         d=json.loads(s.rfile.read(int(s.headers.get('Content-Length',0))) or b'{}')
         try:
-            if s.path=='/act':return s.send(200,act(d['sender'],d['kind'],cat=d.get('cat','all')))
+            if s.path=='/act':
+                if d['kind']=='unnote':return s.send(200,act(d['sender'],'unnote'))
+                it=enqueue(d['sender'],d['kind'],d.get('cat','all'));return s.send(200,dict(ok=True,queued=True,qid=it['id']))
             if s.path=='/undo':return s.send(200,undo(int(d['id'])))
             if s.path=='/undo_last':return s.send(200,undo_last_job())
             if s.path=='/accept_ai':return s.send(200,accept_ai(d['senders'],d.get('cat','all')))

@@ -93,6 +93,8 @@ kbd{background:#333946;border-radius:4px;padding:1px 6px;font-size:12px;color:#e
 #job .box{background:#22262f;border-radius:14px;padding:18px 20px;width:min(360px,90vw)}
 #job .bar{height:8px;background:#333946;border-radius:4px;overflow:hidden;margin:10px 0}
 #job .bar i{display:block;height:100%;background:#7fb3ff;width:0}
+#qchip{display:none;background:#2a2416;color:#f0d27a;border-radius:20px;padding:2px 10px;font-size:12px;font-weight:600}
+#qchip.ok{background:#173d2b;color:#7be0a8}#qchip.bad{background:#3d1d1d;color:#ffb4b4}
 </style></head>
 <body>
 <header>
@@ -110,7 +112,7 @@ kbd{background:#333946;border-radius:4px;padding:1px 6px;font-size:12px;color:#e
     <select id="aif" title="AI filter"><option value="">🤖 All</option></select>
     <select id="sort" title="Order"><option value="size">Biggest</option><option value="n">Most emails</option><option value="old">Oldest</option><option value="ai">🤖 Surest trash first</option></select>
   </div>
-  <div class="sum" id="sum"></div>
+  <div class="sum"><span id="sum" style="display:contents"></span><span id="qchip"></span></div>
   <div id="idx"></div>
   <div id="tabs"></div>
 </header>
@@ -221,8 +223,25 @@ $('bulkai').onclick=async()=>{
   if(!ok)return;
   const r=await post('/accept_ai',{senders:list.map(s=>s.sender),cat:$('cat').value});
   if(!r.ok)return toast('⚠ '+r.error,false);
-  await watchJob();
+  toast(`🤖 ${r.queued} senders queued. Trashing runs in the background; keep swiping.`,false);
+  pollQueue();load();
 };
+let qTimer=null,qWas=0;
+async function pollQueue(){
+  clearTimeout(qTimer);
+  let q;try{q=await fetch('/queue').then(r=>r.json())}catch(e){return}
+  const c=$('qchip');
+  if(q.trash_pending||q.current){
+    c.className='';c.style.display='inline-block';
+    c.textContent=`⏳ Trashing in background: ${q.trash_pending} sender${q.trash_pending==1?'':'s'} queued${q.failed?` · ⚠ ${q.failed} failed`:''}`;
+    qWas=1;qTimer=setTimeout(pollQueue,1500);
+  }else if(qWas){
+    qWas=0;c.className=q.failed?'bad':'ok';c.textContent=q.failed?`⚠ ${q.failed} failed: ${q.last_error||''}`:'✅ Background trashing done';
+    c.style.display='inline-block';setTimeout(()=>{if(!qWas)c.style.display='none'},6000);
+    load();
+  }else c.style.display='none';
+}
+let cancelledN=0;
 async function watchJob(){
   $('job').style.display='flex';
   for(;;){
@@ -230,7 +249,7 @@ async function watchJob(){
     $('jobt').textContent=j.title||'Working…';$('jobbar').style.width=(j.total?j.done/j.total*100:0)+'%';
     $('jobm').textContent=`${j.done||0} / ${j.total||0} senders · ${(j.emails||0).toLocaleString()} emails${j.size?' · '+mb(j.size):''}${j.failed?` · ⚠ ${j.failed} failed`:''}`;
     if(!j.running){$('job').style.display='none';
-      toast(j.error?'⚠ '+j.error:`✅ ${j.title}: ${j.done} senders, ${(j.emails||0).toLocaleString()} emails${j.failed?`, ⚠ ${j.failed} failed (try again)`:''}.${j.title.startsWith('Undoing')?'':' ↩ Undo reverses it.'}`,false);
+      toast(j.error?'⚠ '+j.error:`✅ ${j.title}: ${j.done} senders, ${(j.emails||0).toLocaleString()} emails restored${cancelledN?`, and ${cancelledN} queued senders cancelled`:''}${j.failed?`, ⚠ ${j.failed} failed (try again)`:''}.`,false);cancelledN=0;
       tab='review';return load()}
     await new Promise(r=>setTimeout(r,800));
   }
@@ -239,7 +258,7 @@ $('cat').onchange=()=>{localStorage.cat=$('cat').value;load()};
 $('sort').onchange=()=>{localStorage.sort=$('sort').value;build();render()};
 
 function header(){
-  const L={trash_all:'🗑 Trash all',trash_old:'🕰 Trash old',keep:'✅ Keep',skip:'⏭ Skip',bulk:'🤖 Bulk accept of'};
+  const L={trash_all:'🗑 Trash all',trash_old:'🕰 Trash old',keep:'✅ Keep',skip:'⏭ Skip',bulk:'🤖 Bulk accept of',unnote:'↩'};
   $('undobtn').disabled=!stats.actions;$('undobtn').title=stats.last?`Undo: ${L[stats.last.kind]} ${stats.last.sender} · key Z`:'Nothing to undo';
   $('sum').innerHTML=`<span>🗑 Trashed <b>${stats.trashed}</b> emails · <b>${mb(stats.trashed_size)}</b> freed</span><span>📬 ${stats.live} left · ${mb(stats.live_size)}</span>`;
   $('idx').style.display=stats.indexing?'block':'none';
@@ -320,12 +339,11 @@ async function decide(kind){
   card.style.transform=kind==='keep'?'translateX(130%) rotate(16deg)':kind==='trash_all'?'translateX(-130%) rotate(-16deg)':kind==='trash_old'?'translateY(110%)':'translateY(-110%)';
   stamps(kind==='keep'?200:kind==='trash_all'?-200:0,kind==='trash_old'?200:0);
   const n=kind==='trash_all'?s.trashable:kind==='trash_old'?s.old:0;
-  const slow=setTimeout(()=>{$('busymsg').textContent=`Moving ${n.toLocaleString()} emails to Trash…`;$('busy').style.display='flex'},350);
+  queue.shift();setTimeout(()=>{busy=false;render()},200);   // next card right away; Gmail work runs in the background
   let r;try{r=await post('/act',{sender:s.sender,kind,cat:$('cat').value})}catch(e){r={ok:false,error:String(e)}}
-  clearTimeout(slow);$('busy').style.display='none';busy=false;
   if(r.error){toast('⚠ Failed: '+r.error,false);await load();return}
-  toast(`${lab}: ${s.name||s.sender}${r.n?` · ${r.n} emails · ${mb(r.size)}`:''}${r.failed?` (⚠ ${r.failed} failed, try again)`:''}`);
-  await load();
+  toast(kind.startsWith('trash')?`${lab}: ${s.name||s.sender} · ${n.toLocaleString()} emails · ${mb(kind==='trash_all'?s.size:s.old_size)} (in background)`:`${lab}: ${s.name||s.sender}`);
+  pollQueue();load();
 }
 function spring(){card.style.transition='transform .2s';card.style.transform='';stamps(0,0)}
 async function restore(id){
@@ -337,7 +355,8 @@ async function undo(){
   if(busy)return;busy=true;$('busymsg').textContent='Undoing…';$('busy').style.display='flex';
   const r=await post('/undo_last',{});$('busy').style.display='none';busy=false;
   if(r.none)return toast('Nothing to undo',false);
-  if(r.job)return watchJob();
+  if(r.cancelled&&!r.job){toast(`↩ Cancelled before it ran: ${r.sender}. Back in To review.`,false);tab='review';return load()}
+  if(r.job){cancelledN=r.cancelled||0;return watchJob()}
   const L={trash_all:'🗑 Trash all',trash_old:'🕰 Trash old',keep:'✅ Keep',skip:'⏭ Skip'};
   toast(r.ok?`↩ Undid ${L[r.kind]}: ${r.sender}${r.n?` · ${r.n} emails back`:''}. It's back in To review.`:`⚠ Undo incomplete (${r.failed} failed). Tap Undo again.`,false);
   tab='review';await load();
@@ -368,6 +387,6 @@ function closeHelp(){$('help').style.display='none';localStorage.seenMailHelp2=1
 $('helpbtn').onclick=openHelp;$('gotit').onclick=closeHelp;
 if(localStorage.cat)$('cat').value=localStorage.cat;if(localStorage.sort)$('sort').value=localStorage.sort;
 if(!localStorage.seenMailHelp2)openHelp();
-load();setInterval(()=>{if(stats.indexing&&!busy&&tab==='review')fetch('/stats').then(r=>r.json()).then(s=>{stats=s;header()})},15000);
+load();pollQueue();setInterval(()=>{if(stats.indexing&&!busy&&tab==='review')fetch('/stats').then(r=>r.json()).then(s=>{stats=s;header()})},15000);
 </script>
 </body></html>
