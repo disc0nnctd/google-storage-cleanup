@@ -17,7 +17,7 @@ select,.icon{background:var(--chip);color:#eef1f6;border:0;border-radius:8px;pad
 .sum{font-size:12.5px;color:var(--mut);margin-top:7px;display:flex;gap:12px;flex-wrap:wrap}
 .sum b{color:#eef1f6}
 #idx{margin:6px 0 0;font-size:12px;color:#e6c27a;background:#2a2416;border-radius:8px;padding:5px 9px;display:none}
-#tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:8px}
+#tabs{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:8px}
 #tabs button{background:var(--chip);border:0;color:#c9d0db;border-radius:9px;padding:7px 2px;font-size:12.5px;border-bottom:3px solid transparent}
 #tabs button.on{color:#fff;background:#323846;border-bottom-color:#7fb3ff}
 #tabs button b{display:block;font-size:14px}
@@ -188,18 +188,20 @@ const enc=encodeURIComponent,esc=t=>String(t??'').replace(/[&<>"]/g,c=>({'&':'&a
 const mb=b=>!b?'0 MB':b>=1e9?(b/1e9).toFixed(2)+' GB':b>=1e6?(b/1e6).toFixed(1)+' MB':Math.max(1,Math.round(b/1e3))+' KB';
 const day=t=>new Date(t*1000).toLocaleDateString('en-IN',{month:'short',year:'numeric'});
 const ago=t=>{const d=(Date.now()/1000-t)/86400;return d<1?'today':d<45?Math.round(d)+' days ago':d<700?Math.round(d/30)+' months ago':(d/365).toFixed(1)+' years ago'};
+let ulog=[];
 let all=[],queue=[],tab='review',busy=false,stats={},hdata={trashed:[],kept:[]};
 const card=$('card'),stage=$('stage');
 
 async function load(){
   const [s,st,h]=await Promise.all([fetch('/senders?cat='+$('cat').value).then(r=>r.json()),fetch('/stats').then(r=>r.json()),fetch('/history').then(r=>r.json())]);
-  all=s;stats=st;hdata=h;build();render();
+  all=s;stats=st;hdata=h;ulog=await fetch('/unsub_log').then(r=>r.json()).catch(()=>[]);build();render();
 }
 const money=()=>$('cat').value==='money';
 const VIA=v=>v.money?'📏 money-mail rules':v.kind==='trash_old'?'🕰 trash old':'🗑 trash all';
 function marked(s){
   const parts=[];
   if(s.queued)parts.push(`<div>⏳ <b>Queued for deletion</b> (${VIA(s.queued)}${s.queued.money!==money()?', from the other view':''}). Gmail work is running in the background.</div>`);
+  if(s.still_sending)parts.push(`<div>✋ You unsubscribed ${ago(s.unsubbed.at)}, but <b>${s.still_sending} emails arrived since</b>. Unsubscribe didn't stick; trashing is the way.</div>`);
   if(s.in_trash)parts.push(`<div>🗑 <b>${s.in_trash.n.toLocaleString()} emails already in Trash</b> · ${mb(s.in_trash.size)}${s.in_trash.kind?` · via ${VIA(s.in_trash)} ${ago(s.in_trash.at)}`:''}. The counts below are only what's left.</div>`);
   return parts.length?`<div id="marked">${parts.join('')}</div>`:'';
 }
@@ -302,7 +304,7 @@ function header(){
   $('sum').innerHTML=`<span>🗑 Trashed <b>${stats.trashed}</b> emails · <b>${mb(stats.trashed_size)}</b> freed</span><span>📬 ${stats.live} left · ${mb(stats.live_size)}</span>`;
   $('idx').style.display=stats.indexing?'block':'none';
   $('idx').textContent=`⏳ Still reading your mailbox: ${(stats.live+stats.trashed).toLocaleString()} of ~${stats.total.toLocaleString()} emails so far. Counts grow as it goes; reload the page later for more.`;
-  const tabs=[['review','📥 To review',queue.length],['kept','✅ Kept & skipped',hdata.kept.length],['trashed','🗑 Trashed',hdata.trashed.length]];
+  const tabs=[['review','📥 To review',queue.length],['kept','✅ Kept',hdata.kept.length],['trashed','🗑 Trashed',hdata.trashed.length],['unsub','✋ Unsubs',ulog.length]];
   $('tabs').innerHTML=tabs.map(([k,t,n])=>`<button data-t="${k}" class="${tab===k?'on':''}"><b>${n}</b>${t}</button>`).join('');
   $('tabs').querySelectorAll('button').forEach(b=>b.onclick=()=>{tab=b.dataset.t;render()});
 }
@@ -363,6 +365,16 @@ function render(){
 }
 function renderList(){
   const L=$('list');
+  if(tab==='unsub'){
+    const still=all.filter(s=>s.still_sending);
+    const okN=ulog.filter(u=>u.ok).length;
+    L.innerHTML=`<p style="color:var(--mut);font-size:12.5px;margin:2px 2px 8px">Every unsubscribe attempt is logged with the sender's raw unsubscribe headers, so failures can be fixed later. ${okN} worked · ${ulog.length-okN} didn't.</p>`+
+      (still.length?`<p style="color:#ffb4b4;font-size:13px;margin:4px 2px 8px">⚠ Still sending after unsubscribing: ${still.map(s=>`<b>${esc(s.name||s.sender)}</b> (${s.still_sending})`).join(', ')}</p>`:'')+
+      (ulog.length?ulog.map(u=>`<div class="li"><div><b>${u.ok?'✅':'⚠'} ${esc(u.sender)}</b><span>${esc(u.method)} · ${esc(u.detail)} · ${ago(u.at)}${u.response&&!u.ok?` · “${esc(u.response.slice(0,80))}”`:''}</span></div>
+        ${u.target&&u.target.startsWith('http')&&!u.ok?`<button onclick="window.open('${esc(u.target)}','_blank','noopener')">Open page</button>`:''}</div>`).join('')
+        :'<p style="color:var(--mut);text-align:center;margin-top:40px">No unsubscribe attempts yet.</p>');
+    return;
+  }
   if(tab==='trashed'){
     L.innerHTML=hdata.trashed.length?`<p style="color:var(--mut);font-size:12.5px;margin:2px 2px 8px">Restore puts those emails back exactly where they were. Gmail empties Trash after 30 days.</p>`+hdata.trashed.map(a=>`
       <div class="li"><div><b>${esc(a.name||a.sender)}</b><span>${a.kind==='trash_old'?'🕰 old only':'🗑 all'} · ${a.n} emails · ${mb(a.size)} · ${ago(a.at)}</span></div>

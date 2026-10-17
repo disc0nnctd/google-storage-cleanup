@@ -32,16 +32,20 @@ PROTECT=re.compile(r'bank|icici|hdfc|sbi\b|axis|kotak|yes ?bank|idfc|indusind|rb
     r'aadhaar|\bpan\b|passport|uidai|digilocker|statement|invoice|receipt|salary|payslip|loan|emi|'
     r'credit card|tax|hospital|medical|lab report|apollo|practo',re.I)
 lock=threading.Lock()
-_svc=None
+_local=threading.local()
 def svc():
-    global _svc
-    if _svc is None:_svc=service()
-    return _svc
+    # one Gmail client per thread: the underlying httplib2 connection is NOT thread-safe, and sharing it
+    # between request threads and the queue worker crossed responses (e.g. getProfile returning a str)
+    if getattr(_local,'svc',None) is None:_local.svc=service()
+    return _local.svc
 
 _profile=None
 def profile():
     global _profile
-    if _profile is None:_profile=svc().users().getProfile(userId='me').execute()
+    if _profile is None:
+        p=svc().users().getProfile(userId='me').execute()
+        if not isinstance(p,dict) or 'emailAddress' not in p:raise RuntimeError(f'bad Gmail profile response: {str(p)[:80]}')
+        _profile=p
     return _profile
 def me():return profile()['emailAddress'].lower()
 
@@ -100,9 +104,12 @@ def _senders(cat):
     out=[]
     for s in g.values():
         if s['sender']==me():continue
-        s['subjects']=[t for _,t in sorted(s['subjects'],reverse=True)[:6]]
+        raw=s['subjects'];s['subjects']=[t for _,t in sorted(raw,reverse=True)[:6]]
         s['note']=notes.get(notekey(s['sender'],cat))
         s['unsubbed']=uns.get(s['sender'])
+        u=s['unsubbed']
+        if u and u['status']=='done':   # unsubscribed, yet mail kept coming 3+ days later
+            s['still_sending']=sum(1 for d,_ in raw if d>u['at']+3*DAY)
         t=gone.get(s['sender'])
         s['in_trash']=dict(n=t[0],size=t[1] or 0,**via.get(s['sender'],{})) if t else None
         s['queued']=queued.get(s['sender'])
@@ -182,9 +189,19 @@ def _undo(action_id):
         return dict(ok=not bad,n=len(ok),failed=len(bad))
 
 # ---- unsubscribe: RFC 8058 one-click POST, else mailto via Gmail, else hand the page to the user ----
-import urllib.request,urllib.parse,base64
+import urllib.request,urllib.parse,urllib.error,base64
+def log_unsub(sender,res,hdr,target):
+    c=db();c.execute('insert into unsub_log(sender,at,method,ok,detail,response,target,list_unsub,list_unsub_post,msg) values(?,?,?,?,?,?,?,?,?,?)',
+        (sender,int(time.time()),res.get('method'),1 if res.get('ok') else 0,res.get('detail',''),res.get('response','')[:300],target or '',
+         hdr['lu'][:1000],hdr['lup'],hdr['msg']));c.commit()
 from email.message import EmailMessage
 def unsubscribe(sender):
+    try:return _unsubscribe(sender)
+    except Exception as e:
+        log_unsub(sender,dict(method='error',ok=False,detail=f'{type(e).__name__}: {e}'[:300]),dict(lu='',lup='',msg=''),'')
+        c=db();c.execute('insert or replace into unsubs values(?,?,?,?,?)',(sender,'error','failed',str(e)[:150],int(time.time())));c.commit();bump()
+        return dict(ok=False,method='error',detail=str(e)[:150])
+def _unsubscribe(sender):
     con=db()
     ai=con.execute('select category from sender_ai where sender=?',(sender,)).fetchone()
     if ai and ai['category']=='Spam & scams':
@@ -193,6 +210,7 @@ def unsubscribe(sender):
     if not row:return dict(ok=False,method='none',detail='This sender gives no unsubscribe option.')
     h={x['name'].lower():x['value'] for x in svc().users().messages().get(userId='me',id=row['id'],format='metadata',
         metadataHeaders=['List-Unsubscribe','List-Unsubscribe-Post']).execute()['payload'].get('headers',[])}
+    hdr=dict(lu=h.get('list-unsubscribe',''),lup=h.get('list-unsubscribe-post',''),msg=row['id'])
     urls=re.findall(r'<([^>]+)>',h.get('list-unsubscribe',''))
     https=next((u for u in urls if u.lower().startswith('https://')),None)
     mailto=next((u for u in urls if u.lower().startswith('mailto:')),None)
@@ -203,10 +221,13 @@ def unsubscribe(sender):
             if not dry:
                 req=urllib.request.Request(https,data=b'List-Unsubscribe=One-Click',method='POST',
                     headers={'Content-Type':'application/x-www-form-urlencoded','User-Agent':'Mozilla/5.0 MailSwipe'})
-                with urllib.request.urlopen(req,timeout=20) as r:code=r.status
-            else:code=200
-            res=dict(ok=200<=code<400,method='one-click',detail=f'HTTP {code}')
+                with urllib.request.urlopen(req,timeout=20) as r:code=r.status;body=r.read(300).decode('utf-8','replace')
+            else:code=200;body=''
+            res=dict(ok=200<=code<400,method='one-click',detail=f'HTTP {code}',response=body)
+        except urllib.error.HTTPError as e:
+            res=dict(ok=False,method='one-click',detail=f'HTTP {e.code}',response=e.read(300).decode('utf-8','replace'))
         except Exception as e:res=dict(ok=False,method='one-click',detail=str(e)[:150])
+        log_unsub(sender,res,hdr,https)
     if (not res or not res['ok']) and mailto:
         u=urllib.parse.urlparse(mailto);q=urllib.parse.parse_qs(u.query)
         m=EmailMessage();m['To']=urllib.parse.unquote(u.path);m['Subject']=q.get('subject',['unsubscribe'])[0]
@@ -215,10 +236,12 @@ def unsubscribe(sender):
             if not dry:svc().users().messages().send(userId='me',body={'raw':base64.urlsafe_b64encode(m.as_bytes()).decode()}).execute()
             res=dict(ok=True,method='email',detail='sent to '+m['To'])
         except Exception as e:res=dict(ok=False,method='email',detail=str(e)[:150])
+        log_unsub(sender,res,hdr,mailto)
     if not res or not res['ok']:
         page=https or next((u for u in urls if u.lower().startswith('http')),None)
         if page:res=dict(ok=False,method='page',detail='Needs a click on their page',url=page)
         elif not res:res=dict(ok=False,method='none',detail='No usable unsubscribe option.')
+        log_unsub(sender,res,hdr,page)
     con.execute('insert or replace into unsubs values(?,?,?,?,?)',(sender,res['method'],'done' if res['ok'] else 'failed',res['detail'],int(time.time())))
     con.commit();bump()
     return res
@@ -366,6 +389,9 @@ class H(BaseHTTPRequestHandler):
         if u.path=='/senders':return s.send(200,senders(q.get('cat',['promotions'])[0]))
         if u.path=='/history':return s.send(200,history())
         if u.path=='/stats':return s.send(200,stats())
+        if u.path=='/unsub_log':
+            rows=[dict(r) for r in db().execute('select * from unsub_log order by id desc limit 300')]
+            return s.send(200,rows)
         if u.path=='/queue':return s.send(200,queue_status())
         if u.path=='/job':return s.send(200,{k:v for k,v in JOB.items()})
         s.send(404,{})
