@@ -23,16 +23,21 @@ MERCHANT=[re.compile(p,re.I) for p in (
     r'\bfrom\s+([A-Za-z][\w .&\'-]{2,40}?)\s+(?:on|has|via)\b',
     r"\bto\s+([A-Z][A-Za-z .]{2,40}?)'s\b",
     r'receipt for\s+([A-Za-z][\w .&\'-]{2,40})',
-    r'^([A-Z][A-Za-z0-9 .&\'-]{2,40}?)\s+(?:₹|rs\.?)\s*[\d,.]+\s+paid successfully',
+    r'^([A-Z][A-Za-z0-9 .&\'()-]{2,50}?)\s+(?:₹|rs\.?)\s*[\d,.]+\s+paid successfully',
+    r'\bpayment to\s+([A-Za-z][\w .&\'-]{2,40}?)\s+was\b',
+    r'\bBill Payment Successful\s+(?:₹|rs\.?)\s*[\d,.]+\s+For\s+([A-Za-z][\w .&-]{2,30}?)\s+(?:Customer|Consumer|Account)',
+    r'purchased your\s+([A-Za-z][\w .&-]{2,40}?)\s+worth\b',
+    r'\bto\s+VPA\s+(\S+@\S+?)\s+on\b',
+    r'\bMerchant\s+([A-Za-z][\w .&*\'-]{2,40}?)(?:\s+(?:Transaction|Date|Time|Card)|[.,]|$)',
 )]
 CREDIT=re.compile(r'\b(credited|received|refund(?:ed)?|cashback|reversal|reversed)\b',re.I)
-DEBIT=re.compile(r'\b(debited|spent|used for|paid|payment of|transaction of|purchase|towards|withdrawn|charged|thank you for using|money sent|sent successfully|fund transfer|receipt|total)\b',re.I)
+DEBIT=re.compile(r'\b(debited|spent|used for|paid|payment of|transaction of|purchase|towards|withdrawn|charged|thank you for using|money sent|sent successfully|fund transfer|receipt|total|transaction was successful|card transaction|travelling with us|thanks for riding|paid successfully)\b',re.I)
 CARDBILL=re.compile(r'credit card (?:bill )?payment|bill payment .{0,30}credit card|payment received on your .{0,30}credit card|\bCRED (?:CLUB|CCBP)\b|towards CRED\b',re.I)
-TOPUP=re.compile(r'added (?:successfully )?(?:₹|rs\.?)?\s*[\d,.]*\s*to .{0,40}wallet|money added successfully',re.I)
+TOPUP=re.compile(r'added (?:successfully )?(?:₹|rs\.?)?\s*[\d,.]*\s*(?:successfully )?to .{0,40}wallet|money added successfully|\brepayment\b|debit by transfer|hold for (?:rs|inr)|cash-load',re.I)
 
 NOTSPEND=re.compile(r'^\s*(saved|off\b|discount|cashback up to|instant discount)',re.I)
 PREFER=re.compile(r'(total|paid|amount|debited|spent|transaction of|for|charged|fare|payment of|bill)\W{0,3}(?:of\W{0,3})?$',re.I)
-STATEMENT=re.compile(r'statement|minimum amount due|total amount due|payment due',re.I)
+STATEMENT=re.compile(r'statement|minimum amount due|total amount due|payment due|wallet summary|balance summary|monthly summary',re.I)
 def pick_amount(t):
     best=None
     for m in AMT.finditer(t):
@@ -53,6 +58,7 @@ def parse(snippet,subject,typ=None):
     cur='USD' if m.group(1).lower() in('usd','us$','$') else 'INR'
     both=(subject or '')+' '+t
     if re.search(r'\b(failed|declined|unsuccessful|reversed)\b',both,re.I) and not re.search(r'refund',both,re.I):direction='failed'
+    elif re.search(r'\b(buy|sell) order\b|order (?:is )?filled',both,re.I):direction='invest'
     elif re.search(r'zerodha|groww|upstox|indmoney|vested|fyers|dhan\b|kotak securities|angel one|coin by zerodha|smallcase|wazirx|binance|coindcx',both,re.I) and not re.search(r'brokerage|subscription|charges',both,re.I):direction='invest'   # money moved to brokers: not spending
     elif re.search(r'fund transfer|neft|rtgs|imps',both,re.I) and not re.search(r'\bat\b',t[:200]):direction='transfer'
     elif STATEMENT.search(subject or '') or STATEMENT.search(t[:120]):direction='statement'   # card statements: not a spend
@@ -61,6 +67,10 @@ def parse(snippet,subject,typ=None):
     elif DEBIT.search(t):direction='debit'
     else:direction='debit' if typ=='record' else 'unknown'                                # a receipt with an amount = a purchase
     merch=next((mm.group(1).strip(' .-') for p in MERCHANT for mm in [p.search(t)] if mm),'')
+    merch=re.sub(r'[.\s]+(Total|Thanks?|Your).*$','',merch,flags=re.I)          # "Lucky Restaurant - Bandra West. Total"
+    if not merch:   # fall back to the subject ("trip with Uber", "order from Mocha", "payment of ₹40 to Swiggy Dine In")
+        sm=re.search(r'(?:trip with|order from|order with|payment of .{0,15}? to|receipt from|paid to)\s+([A-Za-z][\w .&\'-]{2,40}?)(?:\s+was\b|\s+is\b|$|[.,!])',subject or '',re.I)
+        if sm:merch=sm.group(1).strip()
     ins=INSTR.search(t)
     return dict(amount=amt,direction=direction,merchant=merch[:60],instrument=ins.group(1) if ins else '',currency=cur)
 BANKCATS=('Banking & cards','Investing & trading')
@@ -108,6 +118,9 @@ def main():
     for r in c.execute('select id,snippet,subject,type,sender from ledger').fetchall():
         p=parse(r['snippet'],r['subject'],r['type']);n+=1
         src='bank' if cat.get(r['sender']) in BANKCATS else 'merchant'   # bank alert vs shop receipt for the same spend
+        if p and not p['merchant'] and src=='merchant':   # last resort: the shop's own name from its email domain
+            dom=r['sender'].split('@')[-1].split('.');core=[x for x in dom if x not in('com','in','co','net','org','mail','email','e','m','info','noreply','mailer','updates')]
+            p['merchant']=(core[-1] if core else '').capitalize()
         if p:ok+=1;c.execute('update ledger set amount=?,direction=?,merchant=?,instrument=?,source=?,currency=?,parsed=1 where id=?',(p['amount'],p['direction'],p['merchant'],p['instrument'],src,p['currency'],r['id']))
         else:c.execute('update ledger set parsed=0 where id=?',(r['id'],))
     c.commit()
