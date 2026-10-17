@@ -61,6 +61,11 @@ def _senders(cat):
     con=db();notes={r['sender']:r['decision'] for r in con.execute('select * from sender_note')}
     ai={r['sender']:r for r in con.execute('select * from sender_ai')}
     uns={r['sender']:dict(r) for r in con.execute('select * from unsubs')}
+    gone={r[0]:(r[1],r[2]) for r in con.execute("select sender,count(*),sum(size) from msg where state='trashed' group by sender")}
+    via={}
+    for r in con.execute("select sender,kind,coalesce(notekey,sender) nk,at from action where kind like 'trash%' order by id"):
+        via[r['sender']]=dict(kind=r['kind'],money=r['nk'].startswith('money:'),at=r['at'])
+    with QLOCK:queued={i['sender']:dict(kind=i['kind'],money=i['cat']=='money') for i in Q if i['kind']!='unsub'}
     rows=con.execute("select * from msg where state='live'").fetchall()
     g={};money=cat=='money';T=types() if money else {}
     want=CATS.get(cat)
@@ -98,6 +103,9 @@ def _senders(cat):
         s['subjects']=[t for _,t in sorted(s['subjects'],reverse=True)[:6]]
         s['note']=notes.get(notekey(s['sender'],cat))
         s['unsubbed']=uns.get(s['sender'])
+        t=gone.get(s['sender'])
+        s['in_trash']=dict(n=t[0],size=t[1] or 0,**via.get(s['sender'],{})) if t else None
+        s['queued']=queued.get(s['sender'])
         a=ai.get(s['sender'])
         s['ai']=dict(action=a['action'],category=a['category'],sub=a['subcategory'],conf=a['confidence'],reason=a['reason']) if a else None
         hit=PROTECT.search(' '.join([s['sender'],s['name']]+s['subjects']))

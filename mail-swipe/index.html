@@ -104,6 +104,8 @@ kbd{background:#333946;border-radius:4px;padding:1px 6px;font-size:12px;color:#e
 #typebox .t{display:flex;justify-content:space-between;padding:3px 0;border-top:1px solid #3a3220}
 #typebox .t:first-of-type{border-top:0}
 #typebox .r{color:var(--mut);font-size:12px}
+#marked{margin-top:10px;border-radius:10px;padding:8px 11px;font-size:13px;background:#2a1a1a;border:1px solid #6b2c2c;color:#ffc9c9}
+#marked div+div{margin-top:3px}
 </style></head>
 <body>
 <header>
@@ -194,6 +196,13 @@ async function load(){
   all=s;stats=st;hdata=h;build();render();
 }
 const money=()=>$('cat').value==='money';
+const VIA=v=>v.money?'📏 money-mail rules':v.kind==='trash_old'?'🕰 trash old':'🗑 trash all';
+function marked(s){
+  const parts=[];
+  if(s.queued)parts.push(`<div>⏳ <b>Queued for deletion</b> (${VIA(s.queued)}${s.queued.money!==money()?', from the other view':''}). Gmail work is running in the background.</div>`);
+  if(s.in_trash)parts.push(`<div>🗑 <b>${s.in_trash.n.toLocaleString()} emails already in Trash</b> · ${mb(s.in_trash.size)}${s.in_trash.kind?` · via ${VIA(s.in_trash)} ${ago(s.in_trash.at)}`:''}. The counts below are only what's left.</div>`);
+  return parts.length?`<div id="marked">${parts.join('')}</div>`:'';
+}
 const TYP={txn_alert:['💳 Transaction alerts','kept 90 days'],otp_security:['🔐 OTPs & login alerts','kept 7 days'],
   marketing:['📣 Offers & marketing','not kept'],notice:['📌 Notices','kept 1 year'],record:['📄 Statements & records','always kept']};
 function typeBox(s){
@@ -287,6 +296,7 @@ $('cat').onchange=()=>{localStorage.cat=$('cat').value;load()};
 $('sort').onchange=()=>{localStorage.sort=$('sort').value;build();render()};
 
 function header(){
+  if(stats.live===undefined)return;   // first load not finished yet
   const L={trash_all:'🗑 Trash all',trash_old:'🕰 Trash old',keep:'✅ Keep',skip:'⏭ Skip',bulk:'🤖 Bulk accept of',unnote:'↩',unsub:'✋ Unsubscribe'};
   $('undobtn').disabled=!stats.actions;$('undobtn').title=stats.last?`Undo: ${L[stats.last.kind]} ${stats.last.sender} · key Z`:'Nothing to undo';
   $('sum').innerHTML=`<span>🗑 Trashed <b>${stats.trashed}</b> emails · <b>${mb(stats.trashed_size)}</b> freed</span><span>📬 ${stats.live} left · ${mb(stats.live_size)}</span>`;
@@ -312,6 +322,7 @@ function render(){
   card.innerHTML=`
     <div class="who">${esc(s.name||s.sender.split('@')[0])}</div>
     <div class="addr">${esc(s.sender)}</div>
+    ${marked(s)}
     ${money()?typeBox(s):''}
     ${!money()&&s.ai?`<div id="aibox" style="border-color:${AICOL[s.ai.action]}">🤖 Suggests <b class="a" style="color:${AICOL[s.ai.action]}">${AIL[s.ai.action]}</b> · ${Math.round(s.ai.conf*100)}% sure
       <div class="why">${esc(s.ai.reason)}</div><div class="meta">${esc(s.ai.category)} › ${esc(s.ai.sub)}</div></div>`:money()?'':'<div id="aibox" style="opacity:.6">🤖 Not classified yet</div>'}
