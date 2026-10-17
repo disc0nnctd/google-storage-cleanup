@@ -32,7 +32,7 @@ MERCHANT=[re.compile(p,re.I) for p in (
 )]
 CREDIT=re.compile(r'\b(credited|received|refund(?:ed)?|cashback|reversal|reversed)\b',re.I)
 DEBIT=re.compile(r'\b(debited|spent|used for|paid|payment of|transaction of|purchase|towards|withdrawn|charged|thank you for using|money sent|sent successfully|fund transfer|receipt|total|transaction was successful|card transaction|travelling with us|thanks for riding|paid successfully)\b',re.I)
-CARDBILL=re.compile(r'credit card (?:bill )?payment|bill payment .{0,30}credit card|payment received on your .{0,30}credit card|\bCRED (?:CLUB|CCBP)\b|towards CRED\b',re.I)
+CARDBILL=re.compile(r'credit card (?:bill )?payment|bill payment .{0,30}credit card|payment received on your .{0,30}credit card|\bCRED (?:CLUB|CCBP)\b|towards CRED\b|DREAMPLUG',re.I)
 TOPUP=re.compile(r'added (?:successfully )?(?:₹|rs\.?)?\s*[\d,.]*\s*(?:successfully )?to .{0,40}wallet|money added successfully|\brepayment\b|debit by transfer|hold for (?:rs|inr)|cash-load',re.I)
 
 NOTSPEND=re.compile(r'^\s*(saved|off\b|discount|cashback up to|instant discount)',re.I)
@@ -119,7 +119,7 @@ CATEGORY=[
  ('Groceries',r'instamart|blinkit|zepto|bigbasket|grofers|amazon pay in grocery|jiomart|dmart|milkbasket'),
  ('Transport',r'\buber\b|\bola\b|rapido|metro|irctc|redbus|fastag|petrol|fuel|hpcl|bpcl|indian oil|porter|namma yatri'),
  ('Travel',r'makemytrip|goibibo|indigo|air india|vistara|akasa|booking\.com|agoda|airbnb|oyo|cleartrip|yatra'),
- ('Subscriptions',r'claude|anthropic|openai|chatgpt|netflix|spotify|youtube|google play|apple\.com|icloud|prime video|hotstar|jiocinema|github|notion|kindle'),
+ ('Subscriptions',r'claude|anthropic|openai|chatgpt|netflix|spotify|youtube|google play|apple\.com|icloud|prime video|hotstar|jiocinema|github|notion|kindle|runpod|aws|amazon web services|google cloud|digitalocean|vercel|cursor'),
  ('Bills & recharge',r'airtel|\bjio\b|vodafone|\bvi\b|bses|electricity|cspdcl|tata power|broadband|recharge|gas bill|water bill|act fibernet'),
  ('Insurance',r'insurance|bajaj ?allianz|lic\b|hdfc life|star health|policybazaar|acko|digit'),
  ('Shopping',r'amazon|flipkart|myntra|ajio|nykaa|meesho|shopify|tata cliq|croma|reliance digital|decathlon|ikea|snitch|razorpay'),
