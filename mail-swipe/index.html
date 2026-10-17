@@ -95,6 +95,15 @@ kbd{background:#333946;border-radius:4px;padding:1px 6px;font-size:12px;color:#e
 #job .bar i{display:block;height:100%;background:#7fb3ff;width:0}
 #qchip{display:none;background:#2a2416;color:#f0d27a;border-radius:20px;padding:2px 10px;font-size:12px;font-weight:600}
 #qchip.ok{background:#173d2b;color:#7be0a8}#qchip.bad{background:#3d1d1d;color:#ffb4b4}
+.links button{flex:1;border:0;background:var(--chip);color:#7fb3ff;border-radius:9px;padding:9px;font-size:13px}
+.links button:disabled{color:var(--mut)}
+.unsubok{color:#7be0a8!important}
+#cmsg label{display:flex;gap:8px;align-items:center;margin-top:10px;color:#eef1f6}
+#cmsg input{width:20px;height:20px}
+#typebox{margin-top:10px;border-radius:10px;padding:9px 11px;font-size:13.5px;border:1px solid #5a4a1c;background:#241f12}
+#typebox .t{display:flex;justify-content:space-between;padding:3px 0;border-top:1px solid #3a3220}
+#typebox .t:first-of-type{border-top:0}
+#typebox .r{color:var(--mut);font-size:12px}
 </style></head>
 <body>
 <header>
@@ -108,6 +117,7 @@ kbd{background:#333946;border-radius:4px;padding:1px 6px;font-size:12px;color:#e
       <option value="promotions">Promotions</option><option value="social">Social</option>
       <option value="updates">Updates</option><option value="forums">Forums</option>
       <option value="primary">Primary</option><option value="all">All mail</option>
+      <option value="money">💳 Money mail: alerts &amp; offers</option>
     </select>
     <select id="aif" title="AI filter"><option value="">🤖 All</option></select>
     <select id="sort" title="Order"><option value="size">Biggest</option><option value="n">Most emails</option><option value="old">Oldest</option><option value="ai">🤖 Surest trash first</option></select>
@@ -162,8 +172,9 @@ kbd{background:#333946;border-radius:4px;padding:1px 6px;font-size:12px;color:#e
     • Senders that look like <b>bank / tax / insurance / ID / medical</b> get a red warning and ask before trashing.<br><br>
     <b>🤖 AI suggestions:</b> every sender has been sorted by an AI into a category (Shopping, Banking, Social…) with a suggested action and a one-line reason, shown on the card. The suggested button gets a white ring. <b>🤖 Do suggestion</b> (key <kbd>A</kbd>) applies it. Use the <b>🤖 menu</b> (top) to show one category or one suggestion type, then <b>Accept all</b> applies every confident suggestion in that view at once (bank/tax-looking senders and unsure ones are left for you). One <b>↩ Undo</b> reverses the whole batch. The AI only saw sender names, counts and subject lines, never email bodies.<br><br>
     <b>Skip</b> hides a sender for now (it's listed in the Kept &amp; skipped tab).<br>
-    <b>Unsubscribe</b> on the card opens the sender's own unsubscribe page, so new mail stops too.<br>
+    <b>✋ Unsubscribe</b> on the card stops new mail. Most senders support one-click unsubscribe, which happens right here. Some get a short unsubscribe email sent from your Gmail. For the rest you get a link to their page. Spam is never unsubscribed, because that only confirms your address is real. Unsubscribing can't be undone. <b>Accept all</b> can also unsubscribe from every “trash all” sender in one go.<br>
     <b>Keyboard:</b> <kbd>←</kbd> trash all · <kbd>↓</kbd> trash old · <kbd>→</kbd> keep · <kbd>S</kbd> skip · <kbd>Z</kbd> undo · <kbd>?</kbd> help<br>
+    <b>💳 Money mail</b> (in the tab menu): bank, card, broker and payment senders, with each email typed by the AI as a transaction alert, OTP, offer, notice or statement. Here, swipes and <b>📏 Trash by rule</b> only remove alerts (after 90 days), OTPs (after 7 days), offers and old notices. Statements, contract notes and tax papers are never touched.<br>
     <b>Gmail tab menu</b> (top): start with Promotions, then Social and Updates.
   </div>
   <button id="gotit">Got it, start</button>
@@ -181,6 +192,13 @@ const card=$('card'),stage=$('stage');
 async function load(){
   const [s,st,h]=await Promise.all([fetch('/senders?cat='+$('cat').value).then(r=>r.json()),fetch('/stats').then(r=>r.json()),fetch('/history').then(r=>r.json())]);
   all=s;stats=st;hdata=h;build();render();
+}
+const money=()=>$('cat').value==='money';
+const TYP={txn_alert:['💳 Transaction alerts','kept 90 days'],otp_security:['🔐 OTPs & login alerts','kept 7 days'],
+  marketing:['📣 Offers & marketing','not kept'],notice:['📌 Notices','kept 1 year'],record:['📄 Statements & records','always kept']};
+function typeBox(s){
+  const rows=Object.keys(TYP).filter(k=>s.types[k]).map(k=>`<div class="t"><span>${TYP[k][0]}: <b>${s.types[k].toLocaleString()}</b></span><span class="r">${TYP[k][1]}</span></div>`).join('');
+  return `<div id="typebox">${rows}<div class="r" style="margin-top:5px">📏 <b>Trash by rule</b> removes only what's past its keep time. 📄 Statements & records are never touched here.</div></div>`;
 }
 const AIL={trash_all:'🗑 Trash all',trash_old:'🕰 Trash old',keep:'✅ Keep',review:'🤔 Review'};
 const AICOL={trash_all:'var(--trash)',trash_old:'var(--old)',keep:'var(--keep)',review:'#7fb3ff'};
@@ -207,23 +225,34 @@ $('aif').onchange=()=>{build();render()};
 // senders a bulk accept would act on: confident, actionable, and not money/tax/ID-looking when trashing
 const bulkable=s=>s.ai&&s.ai.conf>=0.85&&['trash_all','trash_old','keep'].includes(s.ai.action)&&!(s.protect&&s.ai.action!=='keep')&&!(s.ai.action==='trash_old'&&!s.old);
 function bulkButton(){
-  const b=$('bulkai'),list=queue.filter(bulkable);
+  const b=$('bulkai');
+  if(money()){const l=queue.filter(s=>s.old);b.style.display=l.length?'':'none';b.textContent=`📏 Rules for all ${l.length}`;return}
+  const list=queue.filter(bulkable);
   b.style.display=$('aif').value&&$('aif').value!=='none'&&list.length?'':'none';
   b.textContent=`🤖 Accept all ${list.length}`;
 }
 $('bulkai').onclick=async()=>{
+  if(money()){
+    const l=queue.filter(s=>s.old),em=l.reduce((x,s)=>x+s.old,0),sz=l.reduce((x,s)=>x+s.old_size,0);
+    if(!await ask(`Apply the keep rules to <b>${l.length}</b> money senders:<br><br>💳 transaction alerts older than 90 days<br>🔐 OTPs &amp; login alerts older than 7 days<br>📣 offers &amp; marketing (all)<br>📌 notices older than 1 year<br><br>That's <b>${em.toLocaleString()}</b> emails · <b>${mb(sz)}</b> to Gmail's Trash (30 days). 📄 Statements &amp; records are never touched. One ↩ Undo reverses it all.`,'Apply rules','var(--old)','📏 Money mail rules'))return;
+    const r=await post('/accept_rules',{senders:l.map(s=>s.sender)});
+    toast(`📏 ${r.queued} senders queued. Runs in the background.`,false);pollQueue();return load();
+  }
   const list=queue.filter(bulkable),left=queue.length-list.length;
   const g=a=>list.filter(s=>s.ai.action===a),em=a=>a==='trash_all'?g(a).reduce((x,s)=>x+s.trashable,0):g(a).reduce((x,s)=>x+s.old,0);
+  const uN=g('trash_all').filter(s=>s.unsub&&!(s.unsubbed&&s.unsubbed.status==='done')&&s.ai.category!=='Spam & scams').length;
   const sz=a=>a==='trash_all'?g(a).reduce((x,s)=>x+s.size,0):g(a).reduce((x,s)=>x+s.old_size,0);
   const ok=await ask(`Apply the AI's suggestion to <b>${list.length}</b> senders in this view:<br><br>
     🗑 Trash all: <b>${g('trash_all').length}</b> senders · ${em('trash_all').toLocaleString()} emails · ${mb(sz('trash_all'))}<br>
     🕰 Trash old: <b>${g('trash_old').length}</b> senders · ${em('trash_old').toLocaleString()} emails · ${mb(sz('trash_old'))}<br>
     ✅ Keep: <b>${g('keep').length}</b> senders<br><br>
-    ${left?`${left} other senders stay for you to swipe (unsure, or bank/tax-looking).<br>`:''}Everything goes to Gmail's Trash (30 days). One ↩ Undo reverses the whole batch.`,'Apply all','var(--keep)','🤖 Accept AI suggestions');
+    ${left?`${left} other senders stay for you to swipe (unsure, or bank/tax-looking).<br>`:''}Everything goes to Gmail's Trash (30 days). One ↩ Undo reverses the whole batch.
+    ${uN?`<label><input type="checkbox" id="bulkunsub" checked> Also unsubscribe from the ${uN} “trash all” senders that allow it (can't be undone)</label>`:''}`,'Apply all','var(--keep)','🤖 Accept AI suggestions');
+  const wantUnsub=!!($('bulkunsub')&&$('bulkunsub').checked);
   if(!ok)return;
-  const r=await post('/accept_ai',{senders:list.map(s=>s.sender),cat:$('cat').value});
+  const r=await post('/accept_ai',{senders:list.map(s=>s.sender),cat:$('cat').value,unsub:wantUnsub});
   if(!r.ok)return toast('⚠ '+r.error,false);
-  toast(`🤖 ${r.queued} senders queued. Trashing runs in the background; keep swiping.`,false);
+  toast(`🤖 ${r.queued} senders queued${r.unsub?` (+${r.unsub} unsubscribes)`:''}. Runs in the background; keep swiping.`,false);
   pollQueue();load();
 };
 let qTimer=null,qWas=0;
@@ -231,12 +260,12 @@ async function pollQueue(){
   clearTimeout(qTimer);
   let q;try{q=await fetch('/queue').then(r=>r.json())}catch(e){return}
   const c=$('qchip');
-  if(q.trash_pending||q.current){
+  if(q.trash_pending||q.unsub_pending||q.current){
     c.className='';c.style.display='inline-block';
-    c.textContent=`⏳ Trashing in background: ${q.trash_pending} sender${q.trash_pending==1?'':'s'} queued${q.failed?` · ⚠ ${q.failed} failed`:''}`;
+    c.textContent=`⏳ Background: ${q.trash_pending} to trash${q.unsub_pending?` · ${q.unsub_pending} to unsubscribe`:''}${q.failed?` · ⚠ ${q.failed} failed`:''}`;
     qWas=1;qTimer=setTimeout(pollQueue,1500);
   }else if(qWas){
-    qWas=0;c.className=q.failed?'bad':'ok';c.textContent=q.failed?`⚠ ${q.failed} failed: ${q.last_error||''}`:'✅ Background trashing done';
+    qWas=0;c.className=q.failed?'bad':'ok';c.textContent=q.failed?`⚠ ${q.failed} failed: ${q.last_error||''}`:`✅ Background work done${q.unsubbed?` · ${q.unsubbed} unsubscribed`:''}`;
     c.style.display='inline-block';setTimeout(()=>{if(!qWas)c.style.display='none'},6000);
     load();
   }else c.style.display='none';
@@ -258,7 +287,7 @@ $('cat').onchange=()=>{localStorage.cat=$('cat').value;load()};
 $('sort').onchange=()=>{localStorage.sort=$('sort').value;build();render()};
 
 function header(){
-  const L={trash_all:'🗑 Trash all',trash_old:'🕰 Trash old',keep:'✅ Keep',skip:'⏭ Skip',bulk:'🤖 Bulk accept of',unnote:'↩'};
+  const L={trash_all:'🗑 Trash all',trash_old:'🕰 Trash old',keep:'✅ Keep',skip:'⏭ Skip',bulk:'🤖 Bulk accept of',unnote:'↩',unsub:'✋ Unsubscribe'};
   $('undobtn').disabled=!stats.actions;$('undobtn').title=stats.last?`Undo: ${L[stats.last.kind]} ${stats.last.sender} · key Z`:'Nothing to undo';
   $('sum').innerHTML=`<span>🗑 Trashed <b>${stats.trashed}</b> emails · <b>${mb(stats.trashed_size)}</b> freed</span><span>📬 ${stats.live} left · ${mb(stats.live_size)}</span>`;
   $('idx').style.display=stats.indexing?'block':'none';
@@ -283,26 +312,41 @@ function render(){
   card.innerHTML=`
     <div class="who">${esc(s.name||s.sender.split('@')[0])}</div>
     <div class="addr">${esc(s.sender)}</div>
-    ${s.ai?`<div id="aibox" style="border-color:${AICOL[s.ai.action]}">🤖 Suggests <b class="a" style="color:${AICOL[s.ai.action]}">${AIL[s.ai.action]}</b> · ${Math.round(s.ai.conf*100)}% sure
-      <div class="why">${esc(s.ai.reason)}</div><div class="meta">${esc(s.ai.category)} › ${esc(s.ai.sub)}</div></div>`:'<div id="aibox" style="opacity:.6">🤖 Not classified yet</div>'}
-    ${s.protect?`<div class="warn">⚠ Looks like <b>money / tax / ID</b> mail (matched “${esc(s.protect)}”). Usually worth keeping, or only trashing old.</div>`:''}
+    ${money()?typeBox(s):''}
+    ${!money()&&s.ai?`<div id="aibox" style="border-color:${AICOL[s.ai.action]}">🤖 Suggests <b class="a" style="color:${AICOL[s.ai.action]}">${AIL[s.ai.action]}</b> · ${Math.round(s.ai.conf*100)}% sure
+      <div class="why">${esc(s.ai.reason)}</div><div class="meta">${esc(s.ai.category)} › ${esc(s.ai.sub)}</div></div>`:money()?'':'<div id="aibox" style="opacity:.6">🤖 Not classified yet</div>'}
+    ${s.protect&&!money()?`<div class="warn">⚠ Looks like <b>money / tax / ID</b> mail (matched “${esc(s.protect)}”). Usually worth keeping, or only trashing old.</div>`:''}
     <div class="grid">
       <div class="st"><b>${s.n.toLocaleString()}</b><span>emails</span></div>
       <div class="st"><b>${mb(s.size)}</b><span>space used</span></div>
       <div class="st"><b>${ago(s.last)}</b><span>latest email</span></div>
       <div class="st"><b>${day(s.first)}</b><span>oldest email</span></div>
       <div class="st"><b>${Math.round(s.unread/s.n*100)}%</b><span>never opened</span></div>
-      <div class="st"><b>${s.old.toLocaleString()}</b><span>older than 1 year</span></div>
+      <div class="st"><b>${s.old.toLocaleString()}</b><span>${money()?'past keep time':'older than 1 year'}</span></div>
     </div>
     <div class="chips">${cats}${s.starred?`<span class="chip">⭐ ${s.starred} starred (kept)</span>`:''}</div>
     <ul class="subj"><h4>Latest subjects</h4>${s.subjects.map(t=>`<li>${esc(t)||'<i>(no subject)</i>'}</li>`).join('')}</ul>
     <div class="links">
-      ${s.unsub&&s.unsub.startsWith('http')?`<a href="${esc(s.unsub)}" target="_blank" rel="noopener noreferrer">✋ Unsubscribe</a>`:''}
+      ${s.unsubbed&&s.unsubbed.status==='done'?`<button disabled class="unsubok">✅ Unsubscribed ${ago(s.unsubbed.at)}</button>`
+        :s.ai&&s.ai.category==='Spam & scams'?`<button disabled title="Unsubscribing from spam confirms your address">🚫 Spam: just trash</button>`
+        :s.unsub?`<button id="unsubbtn">✋ Unsubscribe</button>`:`<button disabled>No unsubscribe option</button>`}
       <a href="https://mail.google.com/mail/u/0/#search/${enc('from:'+s.sender)}" target="_blank" rel="noopener">📨 Open in Gmail</a>
     </div>`;
   $('bt-s').textContent=`${s.trashable.toLocaleString()} · ${mb(s.size)}`;
   $('bo-s').textContent=s.old?`${s.old.toLocaleString()} · ${mb(s.old_size)}`:'none that old';
   $('bt').disabled=false;$('bk').disabled=false;$('bo').disabled=!s.old;
+  if($('unsubbtn'))$('unsubbtn').onclick=async e=>{e.stopPropagation();const b=$('unsubbtn');b.disabled=true;b.textContent='Unsubscribing…';
+    const r=await post('/unsubscribe',{sender:s.sender});
+    if(r.ok){b.className='unsubok';b.textContent=r.method==='email'?'✅ Unsubscribed (email sent)':'✅ Unsubscribed';toast(`✋ Unsubscribed from ${s.name||s.sender}. New mail should stop within a few days.`,false)}
+    else if(r.url){b.outerHTML=`<a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">✋ Open their unsubscribe page</a>`;toast('This sender needs one click on their own page.',false)}
+    else{b.textContent='⚠ '+(r.detail||'Failed');toast('⚠ Unsubscribe failed: '+(r.detail||''),false)}};
+  if(money()){
+    $('bt').firstChild.textContent='🗑 Trash these ';$('bo').firstChild.textContent='📏 Trash by rule ';
+    $('bt').classList.remove('sugg');$('bk').classList.remove('sugg');$('bo').classList.toggle('sugg',!!s.old);
+    $('doai').disabled=!s.old;$('doai').textContent=s.old?'📏 Trash by rule (A)':'📏 Nothing past its keep time';
+    return;
+  }
+  $('bt').firstChild.textContent='🗑 Trash all ';$('bo').firstChild.textContent='🕰 Trash old ';
   const sg=s.ai&&s.ai.action;$('bt').classList.toggle('sugg',sg==='trash_all');$('bo').classList.toggle('sugg',sg==='trash_old');$('bk').classList.toggle('sugg',sg==='keep');
   $('doai').disabled=!sg||sg==='review';$('doai').textContent=sg&&sg!=='review'?`🤖 ${AIL[sg]} (A)`:'🤖 No clear suggestion';
 }
@@ -315,7 +359,7 @@ function renderList(){
     L.querySelectorAll('button').forEach(b=>b.onclick=()=>restore(+b.dataset.id));
   }else{
     L.innerHTML=hdata.kept.length?hdata.kept.map(k=>`
-      <div class="li"><div><b>${esc(k.sender)}</b><span>${k.decision==='keep'?'✅ kept':k.decision==='trimmed'?'🕰 kept recent':'⏭ skipped'} · ${ago(k.at)}</span></div>
+      <div class="li"><div><b>${k.sender.startsWith('money:')?'💳 '+esc(k.sender.slice(6)):esc(k.sender)}</b><span>${k.decision==='keep'?'✅ kept':k.decision==='trimmed'?'🕰 kept recent':'⏭ skipped'} · ${ago(k.at)}</span></div>
       <button data-s="${esc(k.sender)}">↩ Review again</button></div>`).join(''):'<p style="color:var(--mut);text-align:center;margin-top:40px">No kept or skipped senders yet.</p>';
     L.querySelectorAll('button').forEach(b=>b.onclick=async()=>{await post('/act',{sender:b.dataset.s,kind:'unnote'});toast('Back in To review: '+b.dataset.s,false);await load()});
   }
@@ -329,12 +373,12 @@ function ask(msg,yes='Trash anyway',col='var(--trash)',title='⚠ This looks imp
 async function decide(kind){
   const s=queue[0];if(busy||!s||tab!=='review')return;
   if(kind==='trash_old'&&!s.old)return toast('No emails older than 1 year from this sender.',false);
-  if(kind.startsWith('trash')&&s.protect){
+  if(kind.startsWith('trash')&&s.protect&&!(money()&&kind==='trash_old')){
     const n=kind==='trash_all'?s.trashable:s.old;
     if(!await ask(`<b>${esc(s.name||s.sender)}</b> matched “${esc(s.protect)}”, which usually means bank, tax, insurance or ID mail.<br><br>Trash <b>${n}</b> ${kind==='trash_old'?'emails older than 1 year':'emails'} anyway? (Recoverable for 30 days.)`)){spring();return}
   }
   busy=true;
-  const lab={trash_all:'🗑 Trashed all',trash_old:'🕰 Trashed old',keep:'✅ Kept',skip:'⏭ Skipped'}[kind];
+  const lab=money()&&kind==='trash_old'?'📏 Trashed by rule':money()&&kind==='trash_all'?'🗑 Trashed alerts & offers':{trash_all:'🗑 Trashed all',trash_old:'🕰 Trashed old',keep:'✅ Kept',skip:'⏭ Skipped'}[kind];
   card.style.transition='transform .22s ease-in';
   card.style.transform=kind==='keep'?'translateX(130%) rotate(16deg)':kind==='trash_all'?'translateX(-130%) rotate(-16deg)':kind==='trash_old'?'translateY(110%)':'translateY(-110%)';
   stamps(kind==='keep'?200:kind==='trash_all'?-200:0,kind==='trash_old'?200:0);
@@ -363,11 +407,11 @@ async function undo(){
 }
 let tt;function toast(m,u=true){$('tmsg').textContent=m;$('toast').style.display='flex';clearTimeout(tt);tt=setTimeout(()=>$('toast').style.display='none',4500)}
 $('undo').onclick=undo;$('undobtn').onclick=undo;$('bt').onclick=()=>decide('trash_all');$('bo').onclick=()=>decide('trash_old');$('bk').onclick=()=>decide('keep');$('skip').onclick=()=>decide('skip');
-const doAI=()=>{const s=queue[0];if(s&&s.ai&&s.ai.action!=='review')decide(s.ai.action)};$('doai').onclick=doAI;
+const doAI=()=>{const s=queue[0];if(!s)return;if(money()){if(s.old)decide('trash_old');return}if(s.ai&&s.ai.action!=='review')decide(s.ai.action)};$('doai').onclick=doAI;
 
 // swipe: horizontal or downward drag; vertical scroll inside the card still works when the card is scrolled
 let sx=null,sy=0,dx=0,dy=0,lock=null;
-card.addEventListener('pointerdown',e=>{if(busy||e.target.closest('a'))return;sx=e.clientX;sy=e.clientY;dx=dy=0;lock=null;card.style.transition='none'});
+card.addEventListener('pointerdown',e=>{if(busy||e.target.closest('a,button'))return;sx=e.clientX;sy=e.clientY;dx=dy=0;lock=null;card.style.transition='none'});
 card.addEventListener('pointermove',e=>{if(sx===null)return;dx=e.clientX-sx;dy=e.clientY-sy;
   if(!lock&&Math.hypot(dx,dy)>12)lock=Math.abs(dx)>Math.abs(dy)?'h':(dy>0&&card.scrollTop<=0?'v':'scroll');
   if(lock==='scroll'||!lock)return;
@@ -383,10 +427,10 @@ onkeydown=e=>{if($('help').style.display==='block'){if(e.key==='Enter'||e.key===
   if($('confirm').style.display==='flex'){if(e.key==='Escape')$('cno').click();if(e.key==='Enter')$('cyes').click();return}
   ({ArrowLeft:()=>decide('trash_all'),ArrowDown:()=>decide('trash_old'),ArrowRight:()=>decide('keep'),s:()=>decide('skip'),a:doAI,z:undo,'?':openHelp})[e.key]?.()};
 function openHelp(){$('help').style.display='block'}
-function closeHelp(){$('help').style.display='none';localStorage.seenMailHelp2=1}
+function closeHelp(){$('help').style.display='none';localStorage.seenMailHelp3=1}
 $('helpbtn').onclick=openHelp;$('gotit').onclick=closeHelp;
 if(localStorage.cat)$('cat').value=localStorage.cat;if(localStorage.sort)$('sort').value=localStorage.sort;
-if(!localStorage.seenMailHelp2)openHelp();
+if(!localStorage.seenMailHelp3)openHelp();
 load();pollQueue();setInterval(()=>{if(stats.indexing&&!busy&&tab==='review')fetch('/stats').then(r=>r.json()).then(s=>{stats=s;header()})},15000);
 </script>
 </body></html>

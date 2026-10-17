@@ -8,11 +8,21 @@ Never touches: starred mail, mail you sent, mail from your own address.
 import json,os,re,sys,time,threading
 from http.server import ThreadingHTTPServer,BaseHTTPRequestHandler
 from urllib.parse import urlparse,parse_qs
-from gmailapi import service,db
+from gmailapi import service,db,tmpl,notekey,TYPE_KEEP
 PORT=int(sys.argv[1]) if len(sys.argv)>1 else 8092
 HERE=os.path.dirname(os.path.abspath(__file__))
 LOG=os.environ.get('MAILSWIPE_LOG') or os.path.join(HERE,'index.log')
 YEAR=365*86400
+DAY=86400
+DELETABLE=('txn_alert','otp_security','marketing','notice')
+_types={'n':-1,'map':{}}
+def types():
+    c=db();n=c.execute('select count(*) from mail_type').fetchone()[0]
+    if n!=_types['n']:_types.update(n=n,map={(r['sender'],r['tmpl']):r['type'] for r in c.execute('select sender,tmpl,type from mail_type')})
+    return _types['map']
+def mtype(r,T):return T.get((r['sender'],tmpl(r['subject'])))
+def past_keep(r,t):
+    k=TYPE_KEEP.get(t);return k is not None and r['date']<time.time()-k*DAY
 CATS={'promotions':'CATEGORY_PROMOTIONS','social':'CATEGORY_SOCIAL','updates':'CATEGORY_UPDATES',
       'forums':'CATEGORY_FORUMS','primary':'CATEGORY_PERSONAL'}
 # Money, tax, identity, health: flagged so trashing them takes an extra confirmation.
@@ -50,15 +60,26 @@ def senders(cat):
 def _senders(cat):
     con=db();notes={r['sender']:r['decision'] for r in con.execute('select * from sender_note')}
     ai={r['sender']:r for r in con.execute('select * from sender_ai')}
+    uns={r['sender']:dict(r) for r in con.execute('select * from unsubs')}
     rows=con.execute("select * from msg where state='live'").fetchall()
-    g={}
+    g={};money=cat=='money';T=types() if money else {}
     want=CATS.get(cat)
     for r in rows:
         labs=r['labels']
         if want and want not in labs:continue
         if cat=='primary' and 'SENT' in labs:continue
+        t=None
+        if money:
+            t=mtype(r,T)
+            if not t:continue
+            if t=='record':   # count it so the card can say what is kept, but never act on it
+                rec=g.setdefault(r['sender'],dict(sender=r['sender'],name=r['name'],n=0,size=0,first=r['date'],last=0,starred=0,unread=0,
+                    trashable=0,old=0,old_size=0,subjects=[],unsub='',cats={},types={}))
+                rec['types']['record']=rec['types'].get('record',0)+1
+                continue
         s=g.setdefault(r['sender'],dict(sender=r['sender'],name='',n=0,size=0,first=r['date'],last=0,starred=0,unread=0,
-            trashable=0,old=0,old_size=0,subjects=[],unsub='',cats={}))
+            trashable=0,old=0,old_size=0,subjects=[],unsub='',cats={},types={}))
+        if t:s['types'][t]=s['types'].get(t,0)+1
         s['n']+=1;s['size']+=r['size'];s['first']=min(s['first'],r['date'])
         if r['date']>=s['last']:
             s['last']=r['date'];s['name']=r['name'] or s['name']
@@ -67,7 +88,7 @@ def _senders(cat):
         if 'UNREAD' in labs:s['unread']+=1
         if eligible(r):
             s['trashable']+=1
-            if r['date']<time.time()-YEAR:s['old']+=1;s['old_size']+=r['size']
+            if (past_keep(r,t) if money else r['date']<time.time()-YEAR):s['old']+=1;s['old_size']+=r['size']
         s['subjects'].append((r['date'],r['subject']))
         for k,v in CATS.items():
             if v in labs:s['cats'][k]=s['cats'].get(k,0)+1
@@ -75,7 +96,8 @@ def _senders(cat):
     for s in g.values():
         if s['sender']==me():continue
         s['subjects']=[t for _,t in sorted(s['subjects'],reverse=True)[:6]]
-        s['note']=notes.get(s['sender'])
+        s['note']=notes.get(notekey(s['sender'],cat))
+        s['unsubbed']=uns.get(s['sender'])
         a=ai.get(s['sender'])
         s['ai']=dict(action=a['action'],category=a['category'],sub=a['subcategory'],conf=a['confidence'],reason=a['reason']) if a else None
         hit=PROTECT.search(' '.join([s['sender'],s['name']]+s['subjects']))
@@ -108,22 +130,26 @@ def act(sender,kind,batch=None,cat='all'):
 def _act(sender,kind,batch=None,cat='all'):
     with lock:
         con=db()
+        nk=notekey(sender,cat)
         if kind in('keep','skip'):
-            con.execute('insert or replace into sender_note values(?,?,?)',(sender,kind,int(time.time())))
-            aid=con.execute('insert into action(at,sender,kind,ids,batch) values(?,?,?,?,?)',(int(time.time()),sender,kind,'[]',batch)).lastrowid;con.commit()
+            con.execute('insert or replace into sender_note values(?,?,?)',(nk,kind,int(time.time())))
+            aid=con.execute('insert into action(at,sender,kind,ids,batch,notekey) values(?,?,?,?,?,?)',(int(time.time()),sender,kind,'[]',batch,nk)).lastrowid;con.commit()
             return dict(ok=True,n=0,id=aid)
         if kind=='unnote':
             con.execute('delete from sender_note where sender=?',(sender,));con.commit();return dict(ok=True,n=0)
         rows=[r for r in con.execute("select * from msg where sender=? and state='live'",(sender,)) if eligible(r)]
         if CATS.get(cat):rows=[r for r in rows if CATS[cat] in r['labels'].split(',')]   # only the Gmail tab the card showed
-        if kind=='trash_old':rows=[r for r in rows if r['date']<time.time()-YEAR]
+        if cat=='money':   # alerts/OTP/offers/notices only; records are never touched
+            T=types();rows=[(r,mtype(r,T)) for r in rows];rows=[(r,t) for r,t in rows if t in DELETABLE]
+            rows=[r for r,t in rows if kind!='trash_old' or past_keep(r,t)]
+        elif kind=='trash_old':rows=[r for r in rows if r['date']<time.time()-YEAR]
         ids=[r['id'] for r in rows]
         if not ids:return dict(ok=True,n=0,size=0,id=None)
         ok,bad=batch_call(ids,'trash')
         con.executemany("update msg set state='trashed' where id=?",[(i,) for i in ok])
         size=sum(r['size'] for r in rows if r['id'] in set(ok))
-        aid=con.execute('insert into action(at,sender,kind,ids,batch) values(?,?,?,?,?)',(int(time.time()),sender,kind,json.dumps(ok),batch)).lastrowid
-        con.execute('insert or replace into sender_note values(?,?,?)',(sender,'trashed' if kind=='trash_all' else 'trimmed',int(time.time())))
+        aid=con.execute('insert into action(at,sender,kind,ids,batch,notekey) values(?,?,?,?,?,?)',(int(time.time()),sender,kind,json.dumps(ok),batch,nk)).lastrowid
+        con.execute('insert or replace into sender_note values(?,?,?)',(nk,'trashed' if kind=='trash_all' else 'trimmed',int(time.time())))
         con.commit()
         return dict(ok=not bad,n=len(ok),failed=len(bad),size=size,id=aid)
 
@@ -142,10 +168,52 @@ def _undo(action_id):
             for k in range(0,len(inbox),1000):
                 svc().users().messages().batchModify(userId='me',body={'ids':inbox[k:k+1000],'addLabelIds':['INBOX']}).execute()
         con.executemany("update msg set state='live' where id=?",[(i,) for i in ok])
-        con.execute('delete from sender_note where sender=?',(a['sender'],))
+        con.execute('delete from sender_note where sender=?',(a['notekey'] or a['sender'],))
         if not bad:con.execute('delete from action where id=?',(action_id,))
         con.commit()
         return dict(ok=not bad,n=len(ok),failed=len(bad))
+
+# ---- unsubscribe: RFC 8058 one-click POST, else mailto via Gmail, else hand the page to the user ----
+import urllib.request,urllib.parse,base64
+from email.message import EmailMessage
+def unsubscribe(sender):
+    con=db()
+    ai=con.execute('select category from sender_ai where sender=?',(sender,)).fetchone()
+    if ai and ai['category']=='Spam & scams':
+        return dict(ok=False,method='refused',detail="Looks like spam: unsubscribing would only confirm your address. Just trash it.")
+    row=con.execute("select id from msg where sender=? and unsub!='' order by date desc limit 1",(sender,)).fetchone()
+    if not row:return dict(ok=False,method='none',detail='This sender gives no unsubscribe option.')
+    h={x['name'].lower():x['value'] for x in svc().users().messages().get(userId='me',id=row['id'],format='metadata',
+        metadataHeaders=['List-Unsubscribe','List-Unsubscribe-Post']).execute()['payload'].get('headers',[])}
+    urls=re.findall(r'<([^>]+)>',h.get('list-unsubscribe',''))
+    https=next((u for u in urls if u.lower().startswith('https://')),None)
+    mailto=next((u for u in urls if u.lower().startswith('mailto:')),None)
+    dry=bool(os.environ.get('MAILSWIPE_DRYRUN'))
+    res=None
+    if https and 'one-click' in h.get('list-unsubscribe-post','').lower():
+        try:
+            if not dry:
+                req=urllib.request.Request(https,data=b'List-Unsubscribe=One-Click',method='POST',
+                    headers={'Content-Type':'application/x-www-form-urlencoded','User-Agent':'Mozilla/5.0 MailSwipe'})
+                with urllib.request.urlopen(req,timeout=20) as r:code=r.status
+            else:code=200
+            res=dict(ok=200<=code<400,method='one-click',detail=f'HTTP {code}')
+        except Exception as e:res=dict(ok=False,method='one-click',detail=str(e)[:150])
+    if (not res or not res['ok']) and mailto:
+        u=urllib.parse.urlparse(mailto);q=urllib.parse.parse_qs(u.query)
+        m=EmailMessage();m['To']=urllib.parse.unquote(u.path);m['Subject']=q.get('subject',['unsubscribe'])[0]
+        m.set_content(q.get('body',['unsubscribe'])[0])
+        try:
+            if not dry:svc().users().messages().send(userId='me',body={'raw':base64.urlsafe_b64encode(m.as_bytes()).decode()}).execute()
+            res=dict(ok=True,method='email',detail='sent to '+m['To'])
+        except Exception as e:res=dict(ok=False,method='email',detail=str(e)[:150])
+    if not res or not res['ok']:
+        page=https or next((u for u in urls if u.lower().startswith('http')),None)
+        if page:res=dict(ok=False,method='page',detail='Needs a click on their page',url=page)
+        elif not res:res=dict(ok=False,method='none',detail='No usable unsubscribe option.')
+    con.execute('insert or replace into unsubs values(?,?,?,?,?)',(sender,res['method'],'done' if res['ok'] else 'failed',res['detail'],int(time.time())))
+    con.commit();bump()
+    return res
 
 # ---- background queue: every action goes through one FIFO worker, so the UI never waits on Gmail ----
 import collections
@@ -157,7 +225,8 @@ def enqueue(sender,kind,cat='all',batch=None):
     with QLOCK:
         _qid[0]+=1;it=dict(id=_qid[0],sender=sender,kind=kind,cat=cat,batch=batch)
         Q.append(it)
-    c=db();c.execute('insert or replace into sender_note values(?,?,?)',(sender,NOTE[kind],int(time.time())));c.commit()  # hide the card now
+    if kind in NOTE:
+        c=db();c.execute('insert or replace into sender_note values(?,?,?)',(notekey(sender,cat),NOTE[kind],int(time.time())));c.commit()  # hide the card now
     bump();QEV.set();return it
 def worker():
     while True:
@@ -167,14 +236,17 @@ def worker():
             if it:QSTAT['current']=it
             else:QEV.clear();QSTAT['current']=None;continue
         try:
+            if it['kind']=='unsub':
+                u=unsubscribe(it['sender'])
+                QSTAT['unsubbed']=QSTAT.get('unsubbed',0)+(1 if u.get('ok') else 0);continue
             r=act(it['sender'],it['kind'],it['batch'],it['cat'])
             QSTAT['emails']+=r.get('n',0);QSTAT['size']+=r.get('size',0) or 0
             if r.get('failed'):QSTAT['failed']+=r['failed'];QSTAT['last_error']=f"{r['failed']} emails from {it['sender']} failed"
             if it['kind'].startswith('trash') and not r.get('n') and r.get('failed'):
-                c=db();c.execute('delete from sender_note where sender=?',(it['sender'],));c.commit()   # nothing moved: bring card back
+                c=db();c.execute('delete from sender_note where sender=?',(notekey(it['sender'],it['cat']),));c.commit()   # nothing moved: bring card back
         except Exception as e:
             QSTAT['failed']+=1;QSTAT['last_error']=f"{it['sender']}: {str(e)[:150]}"
-            c=db();c.execute('delete from sender_note where sender=?',(it['sender'],));c.commit()
+            c=db();c.execute('delete from sender_note where sender=?',(notekey(it['sender'],it['cat']),));c.commit()
         finally:
             with QLOCK:
                 if Q and Q[0] is it:Q.popleft()
@@ -184,7 +256,7 @@ def recover():
     # queue is in memory: senders hidden for a trash that never ran (restart mid-queue) come back for review
     c=db()
     n=c.execute("""delete from sender_note where decision in('trashed','trimmed')
-                   and sender not in (select sender from action where kind like 'trash%')""").rowcount
+                   and sender not in (select coalesce(notekey,sender) from action where kind like 'trash%')""").rowcount
     c.commit()
     if n:print(f'recovered {n} senders whose queued trash never ran',flush=True)
 recover()
@@ -194,7 +266,7 @@ def queue_status():
         pend=list(Q)
     trash=[i for i in pend if i['kind'].startswith('trash')]
     cur=QSTAT['current']
-    return dict(pending=len(pend),trash_pending=len(trash),current=cur['sender'] if cur else None,
+    return dict(pending=len(pend),trash_pending=len(trash),unsub_pending=sum(1 for i in pend if i['kind']=='unsub'),unsubbed=QSTAT.get('unsubbed',0),current=cur['sender'] if cur else None,
                 emails=QSTAT['emails'],size=QSTAT['size'],failed=QSTAT['failed'],last_error=QSTAT['last_error'])
 
 JOB={'running':False}
@@ -208,12 +280,14 @@ def start_job(title,work):
     threading.Thread(target=run,daemon=True).start()
     return dict(ok=True)
 
-def accept_ai(senders_list,cat='all'):
-    batch=int(time.time()*1000);n=0
+def accept_ai(senders_list,cat='all',unsub=False):
+    batch=int(time.time()*1000);n=0;u=0
     for snd in senders_list:
-        a=db().execute('select action from sender_ai where sender=?',(snd,)).fetchone()
-        if a and a['action'] in('trash_all','trash_old','keep'):enqueue(snd,a['action'],cat,batch);n+=1
-    return dict(ok=True,queued=n,batch=batch)
+        a=db().execute('select action,category from sender_ai where sender=?',(snd,)).fetchone()
+        if a and a['action'] in('trash_all','trash_old','keep'):
+            enqueue(snd,a['action'],cat,batch);n+=1
+            if unsub and a['action']=='trash_all' and a['category']!='Spam & scams':enqueue(snd,'unsub',cat,batch);u+=1
+    return dict(ok=True,queued=n,unsub=u,batch=batch)
 
 def undo_last_job():
     with QLOCK:
@@ -226,7 +300,7 @@ def undo_last_job():
     if drop:
         b=drop[0]['batch']
         while b and QSTAT['current'] and QSTAT['current'].get('batch')==b:time.sleep(0.2)   # in-flight item of this batch: let it land, then undo it too
-        c=db();c.executemany('delete from sender_note where sender=?',[(i['sender'],) for i in drop]);c.commit();bump()
+        c=db();c.executemany('delete from sender_note where sender=?',[(notekey(i['sender'],i['cat']),) for i in drop]);c.commit();bump()
         done_in_batch=c.execute('select count(*) from action where batch=?',(drop[0]['batch'],)).fetchone()[0] if drop[0]['batch'] else 0
         r=dict(ok=True,cancelled=len(drop),sender=drop[0]['sender'] if len(drop)==1 else f'{len(drop)} senders',kind=drop[0]['kind'])
         if done_in_batch:   # part of the batch already ran: undo those too
@@ -295,7 +369,12 @@ class H(BaseHTTPRequestHandler):
                 it=enqueue(d['sender'],d['kind'],d.get('cat','all'));return s.send(200,dict(ok=True,queued=True,qid=it['id']))
             if s.path=='/undo':return s.send(200,undo(int(d['id'])))
             if s.path=='/undo_last':return s.send(200,undo_last_job())
-            if s.path=='/accept_ai':return s.send(200,accept_ai(d['senders'],d.get('cat','all')))
+            if s.path=='/accept_ai':return s.send(200,accept_ai(d['senders'],d.get('cat','all'),d.get('unsub',False)))
+            if s.path=='/accept_rules':
+                b=int(time.time()*1000)
+                for snd in d['senders']:enqueue(snd,'trash_old','money',b)
+                return s.send(200,dict(ok=True,queued=len(d['senders']),batch=b))
+            if s.path=='/unsubscribe':return s.send(200,unsubscribe(d['sender']))
         except Exception as e:
             return s.send(500,dict(ok=False,error=str(e)[:300]))
         s.send(404,{})
